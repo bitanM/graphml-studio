@@ -436,6 +436,7 @@ let activeTask      = null;
 let isDemoMode      = false;
 let gnnOnline       = false;
 let gnnPublicUrl    = null;
+let lastUserTrainInfo = null;
 let tsneLoaded      = false;
 let tsnePoints      = null;
 let communityMeta   = null;  // demo community cards
@@ -550,6 +551,7 @@ async function loadDemo() {
   toast('⏳ Loading Farmer\'s Protest demo…');
 
   try {
+    lastUserTrainInfo = null;
     tsneLoaded = false;
     tsnePoints = null;
     tsneThemes = null;
@@ -841,7 +843,7 @@ document.addEventListener('click', (e) => {
 // ══════════════════════════════════════════════
 // GNN NODE CLASSIFICATION
 // ══════════════════════════════════════════════
-async function trainGNN(mode = 'fast') {
+async function trainGNN(mode = 'full') {
   if (!gnnOnline) return toast('⚠ GNN service offline.');
   if (!graphData || !graphData.nodes || !graphData.edges)
     return toast('⚠ Load a graph first.');
@@ -864,6 +866,7 @@ async function trainGNN(mode = 'fast') {
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'Training failed');
+    lastUserTrainInfo = d;
     const msg = d.cached ? '✅ Model loaded from cache' : '✅ GNN training complete';
     toast(msg);
     if (btn) btn.textContent = d.cached ? 'Cached ✓' : 'Trained ✓';
@@ -901,6 +904,14 @@ async function runGNNNodePred() {
     if (!r.ok) throw new Error(d.error);
 
     const color = COMM_COLORS[d.predicted_community % COMM_COLORS.length];
+    const metrics = d.nc_metrics || lastUserTrainInfo?.nc_metrics;
+    const training = d.training || lastUserTrainInfo?.training;
+    const metricsLine = metrics
+      ? `Accuracy: ${(Number(metrics.accuracy || 0) * 100).toFixed(1)}% | Macro-F1: ${(Number(metrics.macro_f1 || 0) * 100).toFixed(1)}%`
+      : 'Metrics unavailable for this model';
+    const trainingLine = training
+      ? `Mode: ${training.mode || 'full'} | Train: ${Math.round(Number(training.nc_train_frac || 0) * 100)}% | Epochs: ${training.nc_epochs || 'n/a'}`
+      : 'Model: GraphSAGE | 3-layer | weighted structural features';
     const top5Html = d.top5 ? d.top5.map(t => `
       <div class="top5-row">
         <span class="top5-comm">C${t.community}</span>
@@ -926,8 +937,8 @@ async function runGNNNodePred() {
       <div class="gnn-result-box">
         <div class="gnn-result-title">Query</div>
         <div style="font-family:'IBM Plex Mono',monospace;font-size:0.85rem;font-weight:600">"${term}"</div>
-        <div class="gnn-result-sub" style="margin-top:4px">Model: GraphSAGE · 3-layer · weighted loss</div>
-        <div class="gnn-result-sub">Accuracy: 41.8% · Macro-F1: 20.6%</div>
+        <div class="gnn-result-sub" style="margin-top:4px">${trainingLine}</div>
+        <div class="gnn-result-sub">${metricsLine}</div>
       </div>`;
   } catch(e) {
     res.innerHTML = `<div style="padding:0.75rem;color:var(--red);font-size:0.78rem">⚠ ${e.message}</div>`;
@@ -970,6 +981,7 @@ async function loadCSVFromBackend(file) {
     if (!d.nodes || !d.edges) throw new Error('Invalid server response.');
 
     isDemoMode = false;
+    lastUserTrainInfo = null;
     tsneLoaded = false;
     tsnePoints = null;
     tsneThemes = null;

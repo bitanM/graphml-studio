@@ -50,6 +50,8 @@ state = {
     'user_feature_cols': None,
     'user_graph_hash': None,
     'user_cached': False,
+    'user_nc_metrics': None,
+    'user_training_config': None,
 }
 
 def graph_hash(nodes_list, edges_list):
@@ -152,6 +154,72 @@ def parse_connections(raw_connections):
         weights.append(w)
     return ids, weights
 
+def enrich_user_nodes_df(nodes_df, edges_df, id_col='id'):
+    """
+    Add structural features for user-uploaded graphs so the classifier learns
+    from weighted connectivity patterns instead of degree alone.
+    """
+    nodes_df = nodes_df.copy()
+    if id_col not in nodes_df.columns:
+        if 'term' in nodes_df.columns:
+            nodes_df = nodes_df.rename(columns={'term': id_col})
+        else:
+            raise ValueError(f'Missing required node id column: {id_col}')
+
+    nodes_df[id_col] = nodes_df[id_col].astype(str)
+
+    if 'community' not in nodes_df.columns and 'communities' in nodes_df.columns:
+        nodes_df['community'] = nodes_df['communities'].apply(
+            lambda v: int(v.get('louvain', 0)) if isinstance(v, dict) else 0
+        )
+
+    derived_cols = [
+        'degree', 'strength', 'mean_weight',
+        'max_weight', 'min_weight', 'weight_std', 'total_coocc',
+    ]
+
+    if edges_df is None or edges_df.empty:
+        for col in derived_cols:
+            if col in nodes_df.columns:
+                nodes_df[col] = pd.to_numeric(nodes_df[col], errors='coerce').fillna(0.0)
+            else:
+                nodes_df[col] = 0.0
+        return nodes_df
+
+    src_col = 'source' if 'source' in edges_df.columns else 'from'
+    tgt_col = 'target' if 'target' in edges_df.columns else 'to'
+    edge_df = edges_df.copy()
+    edge_df[src_col] = edge_df[src_col].astype(str)
+    edge_df[tgt_col] = edge_df[tgt_col].astype(str)
+    if 'weight' in edge_df.columns:
+        edge_df['weight'] = pd.to_numeric(edge_df['weight'], errors='coerce').fillna(1.0)
+    else:
+        edge_df['weight'] = 1.0
+
+    edge_long = pd.concat([
+        edge_df[[src_col, 'weight']].rename(columns={src_col: id_col}),
+        edge_df[[tgt_col, 'weight']].rename(columns={tgt_col: id_col}),
+    ], ignore_index=True)
+
+    agg = edge_long.groupby(id_col).agg(
+        degree=('weight', 'size'),
+        strength=('weight', 'sum'),
+        mean_weight=('weight', 'mean'),
+        max_weight=('weight', 'max'),
+        min_weight=('weight', 'min'),
+        weight_std=('weight', 'std'),
+    )
+    agg['weight_std'] = agg['weight_std'].fillna(0.0)
+    agg['total_coocc'] = agg['strength']
+
+    nodes_df = nodes_df.set_index(id_col, drop=False)
+    for col in derived_cols:
+        existing = pd.to_numeric(nodes_df[col], errors='coerce') if col in nodes_df.columns else pd.Series(index=nodes_df.index, dtype=float)
+        incoming = agg[col] if col in agg.columns else pd.Series(index=nodes_df.index, dtype=float)
+        nodes_df[col] = existing.fillna(incoming).fillna(0.0)
+
+    return nodes_df.reset_index(drop=True)
+
 def build_new_node_feature(feature_cols, scaler, conn_ids, conn_weights):
     """
     Build a single-node feature vector matching training feature_cols,
@@ -161,12 +229,18 @@ def build_new_node_feature(feature_cols, scaler, conn_ids, conn_weights):
     strength = float(sum(conn_weights)) if conn_weights else 0.0
     mean_weight = (strength / degree) if degree > 0 else 0.0
     total_coocc = strength
+    max_weight = float(max(conn_weights)) if conn_weights else 0.0
+    min_weight = float(min(conn_weights)) if conn_weights else 0.0
+    weight_std = float(np.std(conn_weights)) if conn_weights else 0.0
 
     base = {
         'degree': degree,
         'strength': strength,
         'mean_weight': mean_weight,
         'total_coocc': total_coocc,
+        'max_weight': max_weight,
+        'min_weight': min_weight,
+        'weight_std': weight_std,
         'tf': 0.0,
         'df': 0.0,
         'tfidf': 0.0,
@@ -179,7 +253,8 @@ def build_new_node_feature(feature_cols, scaler, conn_ids, conn_weights):
     vec = np.array(vec, dtype=np.float32).reshape(1, -1)
 
     for i, col in enumerate(feature_cols):
-        if col in ('tf', 'df', 'tfidf', 'strength', 'total_coocc'):
+        if col in ('tf', 'df', 'tfidf', 'degree', 'strength', 'total_coocc',
+                   'max_weight', 'min_weight', 'weight_std'):
             vec[:, i] = np.log1p(vec[:, i])
 
     vec_scaled = scaler.transform(vec).astype(np.float32)
@@ -497,7 +572,7 @@ def user_train():
         payload  = request.json or {}
         nodes_list = payload.get('nodes', [])
         edges_list = payload.get('edges', [])
-        mode = str(payload.get('mode', 'fast')).lower()
+        mode = str(payload.get('mode', 'full')).lower()
         force = bool(payload.get('force', False))
 
         if not nodes_list or not edges_list:
@@ -508,10 +583,14 @@ def user_train():
         lp_epochs = int(payload.get('lp_epochs', 20 if mode == 'fast' else 80))
         hidden    = int(payload.get('hidden', 64 if mode == 'fast' else 128))
         lp_out    = int(payload.get('lp_out', 64))
+        nc_train_frac = float(payload.get('nc_train_frac', 0.05 if mode == 'fast' else 0.10))
+        nc_val_frac = float(payload.get('nc_val_frac', 0.15))
+        train_tag = str(round(nc_train_frac, 3)).replace('.', 'p')
+        val_tag = str(round(nc_val_frac, 3)).replace('.', 'p')
 
         # Cache key depends on graph + mode + hyperparams
         gh = graph_hash(nodes_list, edges_list)
-        cache_id = f"{gh}_{mode}_{hidden}_{nc_epochs}_{lp_epochs}"
+        cache_id = f"{gh}_{mode}_{hidden}_{nc_epochs}_{lp_epochs}_{train_tag}_{val_tag}"
         paths = cache_paths(cache_id)
         meta = load_cache_meta(paths['meta'])
 
@@ -521,6 +600,8 @@ def user_train():
         # Rename columns to standard format if needed
         if 'from' in edges_df.columns:
             edges_df = edges_df.rename(columns={'from': 'source', 'to': 'target'})
+
+        nodes_df = enrich_user_nodes_df(nodes_df, edges_df, id_col='id')
 
         # Need at least degree as a feature — compute if missing
         if 'degree' not in nodes_df.columns:
@@ -568,6 +649,15 @@ def user_train():
             state['user_feature_cols'] = feature_cols
             state['user_graph_hash'] = cache_id
             state['user_cached'] = True
+            state['user_nc_metrics'] = meta.get('nc_metrics', {})
+            state['user_training_config'] = {
+                'mode': meta.get('mode', mode),
+                'hidden': meta.get('hidden', hidden),
+                'nc_epochs': meta.get('nc_epochs', nc_epochs),
+                'lp_epochs': meta.get('lp_epochs', lp_epochs),
+                'nc_train_frac': meta.get('nc_train_frac', nc_train_frac),
+                'nc_val_frac': meta.get('nc_val_frac', nc_val_frac),
+            }
 
             with torch.no_grad():
                 embeddings = model_nc.embed(data.x, data.edge_index).cpu().numpy()
@@ -586,11 +676,16 @@ def user_train():
                 'nc_metrics':    meta.get('nc_metrics', {}),
                 'lp_metrics':    meta.get('lp_metrics', {}),
                 'mode':          meta.get('mode', mode),
+                'training':      state['user_training_config'],
             })
 
         # Train NC
         model_nc, nc_metrics = train_node_classification(
-            data, num_classes, epochs=nc_epochs, hidden=hidden
+            data, num_classes,
+            epochs=nc_epochs,
+            hidden=hidden,
+            train_frac=nc_train_frac,
+            val_frac=nc_val_frac,
         )
         model_nc.eval()
         state['user_data']     = data
@@ -601,6 +696,15 @@ def user_train():
         state['user_feature_cols'] = feature_cols
         state['user_graph_hash'] = cache_id
         state['user_cached'] = False
+        state['user_nc_metrics'] = nc_metrics
+        state['user_training_config'] = {
+            'mode': mode,
+            'hidden': hidden,
+            'nc_epochs': nc_epochs,
+            'lp_epochs': lp_epochs,
+            'nc_train_frac': nc_train_frac,
+            'nc_val_frac': nc_val_frac,
+        }
 
         # Compute embeddings + t-SNE
         with torch.no_grad():
@@ -630,6 +734,8 @@ def user_train():
                 'lp_out':      lp_out,
                 'nc_epochs':   nc_epochs,
                 'lp_epochs':   lp_epochs,
+                'nc_train_frac': nc_train_frac,
+                'nc_val_frac': nc_val_frac,
                 'nodes':       len(nodes_df),
                 'edges':       len(edges_df),
                 'communities': num_classes,
@@ -652,6 +758,7 @@ def user_train():
             'nc_metrics':    nc_metrics,
             'lp_metrics':    lp_metrics,
             'mode':          mode,
+            'training':      state['user_training_config'],
         })
 
     except Exception as e:
@@ -738,11 +845,23 @@ def user_predict_node():
 
         pred_class = int(np.argmax(probs))
         confidence = float(probs[pred_class]) * 100
+        top5 = sorted(enumerate(probs.tolist()), key=lambda x: x[1], reverse=True)[:5]
+        top5_result = [
+            {
+                'community': c,
+                'theme': f'Community {c}',
+                'probability': round(p * 100, 2),
+            }
+            for c, p in top5
+        ]
 
         return jsonify({
             'nodeId':               node_id,
             'predicted_community':  pred_class,
             'confidence':           round(confidence, 2),
+            'top5':                 top5_result,
+            'nc_metrics':           state.get('user_nc_metrics'),
+            'training':             state.get('user_training_config'),
         })
     except Exception as e:
         traceback.print_exc()

@@ -194,6 +194,33 @@ class TestBuildPygData:
         assert data.y.max().item() == 1  # re-encoded to 0,1
 
 
+class TestUserFeatureEngineering:
+    def test_enrich_user_nodes_df_adds_weighted_features(self):
+        import pandas as pd
+        from app import enrich_user_nodes_df
+
+        nodes = pd.DataFrame({
+            'id': ['a', 'b', 'c'],
+            'community': [0, 1, 1],
+        })
+        edges = pd.DataFrame({
+            'source': ['a', 'a', 'b'],
+            'target': ['b', 'c', 'c'],
+            'weight': [2.0, 4.0, 6.0],
+        })
+
+        enriched = enrich_user_nodes_df(nodes, edges, id_col='id')
+        row_a = enriched[enriched['id'] == 'a'].iloc[0]
+
+        assert row_a['degree'] == 2
+        assert row_a['strength'] == 6.0
+        assert row_a['mean_weight'] == 3.0
+        assert row_a['max_weight'] == 4.0
+        assert row_a['min_weight'] == 2.0
+        assert row_a['total_coocc'] == 6.0
+        assert 'weight_std' in enriched.columns
+
+
 class TestGraphSAGENC:
     """Tests for GraphSAGE_NC model architecture."""
 
@@ -434,6 +461,8 @@ class TestTrainingPipeline:
         assert model is not None
         assert 'accuracy' in metrics
         assert 'macro_f1' in metrics
+        assert 'train_fraction' in metrics
+        assert 'val_fraction' in metrics
         assert 0.0 <= metrics['accuracy'] <= 1.0
         assert 0.0 <= metrics['macro_f1'] <= 1.0
 

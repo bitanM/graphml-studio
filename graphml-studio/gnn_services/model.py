@@ -114,8 +114,11 @@ def build_pyg_data(nodes_df, edges_df,
 
     # ── Node features ──
     # Use whichever feature columns are available
-    possible_features = ['tf', 'df', 'tfidf', 'pmi_max', 'degree',
-                         'strength', 'mean_weight', 'total_coocc']
+    possible_features = [
+        'tf', 'df', 'tfidf', 'pmi_max',
+        'degree', 'strength', 'mean_weight', 'total_coocc',
+        'max_weight', 'min_weight', 'weight_std',
+    ]
     feature_cols = [c for c in possible_features if c in labeled.columns]
 
     if not feature_cols:
@@ -133,7 +136,8 @@ def build_pyg_data(nodes_df, edges_df,
 
     # Log-scale heavy-tailed columns
     for i, col in enumerate(feature_cols):
-        if col in ('tf', 'df', 'tfidf', 'strength', 'total_coocc'):
+        if col in ('tf', 'df', 'tfidf', 'degree', 'strength', 'total_coocc',
+                   'max_weight', 'min_weight', 'weight_std'):
             X_raw[:, i] = np.log1p(X_raw[:, i])
 
     scaler   = StandardScaler()

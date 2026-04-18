@@ -8,29 +8,94 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
-from torch_geometric.transforms import RandomNodeSplit, RandomLinkSplit
+from torch_geometric.transforms import RandomLinkSplit
 
 from model import GraphSAGE_NC, GraphSAGE_LP
 
 device = torch.device('cpu')
 
 
+def make_stratified_node_split(data, train_frac=0.10, val_frac=0.15, seed=42):
+    """
+    Build stratified train/val/test masks so each community contributes
+    at least one train example when possible.
+    """
+    n_nodes = int(data.num_nodes)
+    train_mask = torch.zeros(n_nodes, dtype=torch.bool)
+    val_mask = torch.zeros(n_nodes, dtype=torch.bool)
+    test_mask = torch.zeros(n_nodes, dtype=torch.bool)
+
+    labels = data.y.cpu().numpy()
+    rng = np.random.default_rng(seed)
+
+    for cls in np.unique(labels):
+        cls_idx = np.where(labels == cls)[0]
+        rng.shuffle(cls_idx)
+        n_cls = len(cls_idx)
+
+        if n_cls == 1:
+            train_n = 1
+            val_n = 0
+        elif n_cls == 2:
+            train_n = 1
+            val_n = 0
+        else:
+            train_n = max(1, int(round(n_cls * train_frac)))
+            val_n = max(1, int(round(n_cls * val_frac)))
+            if train_n + val_n >= n_cls:
+                val_n = max(1, n_cls - train_n - 1)
+            if train_n + val_n >= n_cls:
+                train_n = max(1, n_cls - val_n - 1)
+
+        train_idx = cls_idx[:train_n]
+        val_idx = cls_idx[train_n:train_n + val_n]
+        test_idx = cls_idx[train_n + val_n:]
+
+        train_mask[train_idx] = True
+        if len(val_idx):
+            val_mask[val_idx] = True
+        if len(test_idx):
+            test_mask[test_idx] = True
+
+    if not val_mask.any() and train_mask.sum().item() < n_nodes:
+        remaining = (~train_mask).nonzero(as_tuple=False).view(-1)
+        if len(remaining):
+            val_mask[remaining[0]] = True
+            test_mask[remaining[0]] = False
+
+    if not test_mask.any():
+        candidates = train_mask.nonzero(as_tuple=False).view(-1)
+        if len(candidates) > 1:
+            moved = candidates[-1]
+            train_mask[moved] = False
+            test_mask[moved] = True
+
+    data.train_mask = train_mask
+    data.val_mask = val_mask
+    data.test_mask = test_mask
+    return data
+
+
 def train_node_classification(data, num_classes, epochs=100, hidden=128,
-                               lr=0.005, dropout=0.3, patience=15):
+                               lr=0.005, dropout=0.3, patience=15,
+                               train_frac=0.10, val_frac=0.15):
     """
     Train GraphSAGE for node classification on user-uploaded graph.
     Returns trained model + metrics dict.
     """
-    # Split nodes (5% train, 15% val, 80% test by default)
-    train_frac = 0.05
-    val_frac = 0.15
-    test_frac = 1.0 - train_frac - val_frac
-    # Fallback for very small graphs to avoid empty train split
+    # Stratified split gives the classifier a more stable view of every class.
     if data.num_nodes < 20:
-        val_frac = 0.2
-        test_frac = 0.2
-    transform = RandomNodeSplit(split='train_rest', num_val=val_frac, num_test=test_frac)
-    data = transform(data)
+        train_frac = max(train_frac, 0.20)
+        val_frac = 0.20
+    data = make_stratified_node_split(data, train_frac=train_frac, val_frac=val_frac)
+    if not data.val_mask.any():
+        data.val_mask = data.train_mask.clone()
+    if not data.test_mask.any():
+        remaining = (~data.train_mask & ~data.val_mask).nonzero(as_tuple=False).view(-1)
+        if len(remaining):
+            data.test_mask[remaining[0]] = True
+        else:
+            data.test_mask = data.val_mask.clone()
 
     # Class weights for imbalance
     train_labels  = data.y[data.train_mask].cpu()
@@ -90,6 +155,8 @@ def train_node_classification(data, num_classes, epochs=100, hidden=128,
         'macro_f1': round(float(f1_score(truth, preds, average='macro',
                                           zero_division=0)), 4),
         'epochs_trained': epoch,
+        'train_fraction': round(float(train_frac), 3),
+        'val_fraction': round(float(val_frac), 3),
     }
     return model, metrics
 
