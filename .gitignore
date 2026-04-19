@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+graphml-studio/gnn_services/models/cache_*
+GraphML-Studio.pdf
+GraphML-Studio.pptx
+Project Progress Report 2.pdf

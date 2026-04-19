@@ -98,7 +98,6 @@ PASS tests/server.test.js
 
 **Integration tests — Flask API**
 - `GET /health` — health check endpoint
-- Demo endpoints — correct 400 before demo loaded
 - `POST /gnn/train` — training on small graph
 - User endpoints — correct 400 before training
 
@@ -120,7 +119,7 @@ pytest tests/test_gnn_services.py -v
 pytest tests/test_gnn_services.py -v -k "TestBuildPygData or TestGraphSAGE"
 
 # Integration tests only (Flask test client — no server needed)
-pytest tests/test_gnn_services.py -v -k "TestHealth or TestDemo or TestUser"
+pytest tests/test_gnn_services.py -v -k "TestHealth or TestUser"
 
 # End-to-end test
 pytest tests/test_gnn_services.py -v -k "TestEndToEnd"
@@ -156,8 +155,7 @@ tests/test_gnn_services.py::TestGraphSAGENC::test_forward_pass_shape PASSED
 | GraphSAGE NC model | 3 | Unit |
 | GraphSAGE LP model | 3 | Unit |
 | Flask health endpoint | 3 | Integration |
-| Flask demo endpoints | 5 | Integration |
 | Flask train endpoint | 5 | Integration |
 | Training pipeline | 2 | Unit |
 | Full NC pipeline | 1 | End-to-end |
-| **Total** | **57** | |
+| **Total** | **52** | |

@@ -1,6 +1,6 @@
 """
 GraphSAGE model definitions and PyG data builder.
-Shared between demo mode and user-upload mode.
+Used by the uploaded-graph training and inference pipeline.
 """
 
 import torch

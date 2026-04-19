@@ -70,14 +70,6 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--tex
 .panel-title{font-family:'IBM Plex Mono',monospace;font-size:0.6rem;font-weight:600;color:var(--text3);letter-spacing:0.12em;text-transform:uppercase;}
 .panel-sub{font-size:0.75rem;color:var(--text2);margin-top:2px;}
 
-/* ── DEMO BANNER ── */
-.demo-banner{margin:0.75rem;border-radius:10px;padding:0.85rem 1rem;background:linear-gradient(135deg,rgba(79,142,247,0.12),rgba(139,92,246,0.12));border:1px solid rgba(79,142,247,0.25);cursor:pointer;transition:all 0.2s;}
-.demo-banner:hover{border-color:rgba(79,142,247,0.5);background:linear-gradient(135deg,rgba(79,142,247,0.18),rgba(139,92,246,0.18));}
-.demo-banner-title{font-family:'IBM Plex Mono',monospace;font-size:0.7rem;font-weight:600;background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
-.demo-banner-sub{font-size:0.72rem;color:var(--text2);margin-top:3px;}
-.demo-btn{width:100%;margin-top:0.6rem;padding:0.45rem;background:var(--grad);border:none;border-radius:6px;font-family:'IBM Plex Mono',monospace;font-size:0.68rem;font-weight:600;color:#fff;cursor:pointer;letter-spacing:0.05em;transition:opacity 0.15s;}
-.demo-btn:hover{opacity:0.85;}
-.demo-btn:disabled{opacity:0.4;cursor:not-allowed;}
 
 /* ── UPLOAD ── */
 .upload-zone{margin:0.6rem 0.75rem;border:1.5px dashed var(--border2);border-radius:9px;padding:1.1rem 0.75rem;text-align:center;cursor:pointer;transition:all 0.2s;background:var(--bg3);position:relative;overflow:hidden;}
@@ -208,8 +200,6 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--tex
 .field-input{width:100%;padding:0.4rem 0.6rem;background:var(--bg3);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:0.76rem;font-family:'IBM Plex Sans',sans-serif;outline:none;transition:border-color 0.15s;}
 .field-input:focus{border-color:var(--accent);}
 
-/* ── DEMO MODE BADGE ── */
-.demo-mode-tag{display:inline-flex;align-items:center;gap:4px;font-family:'IBM Plex Mono',monospace;font-size:0.58rem;padding:2px 8px;border-radius:3px;background:linear-gradient(135deg,rgba(79,142,247,0.2),rgba(139,92,246,0.2));border:1px solid rgba(79,142,247,0.3);color:var(--accent);margin-left:6px;}
 
 /* ── TOAST ── */
 #toast{position:fixed;bottom:1.25rem;left:50%;transform:translateX(-50%) translateY(8px);background:var(--bg3);border:1px solid var(--border2);border-radius:7px;padding:0.5rem 1.1rem;font-size:0.75rem;color:var(--text);box-shadow:0 8px 32px rgba(0,0,0,0.5);z-index:1000;pointer-events:none;transition:opacity 0.3s,transform 0.3s;font-family:'IBM Plex Mono',monospace;opacity:0;}
@@ -247,7 +237,6 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--tex
   <div class="menu-group">
     <span class="menu-label">File</span>
     <button class="menu-btn" id="menu-upload-btn">Upload CSV</button>
-    <button class="menu-btn" id="demo-load-btn" onclick="loadDemo()">Load Demo</button>
     <input type="file" id="csv-input" accept=".csv" hidden>
   </div>
   <div class="menu-group">
@@ -313,7 +302,7 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--tex
       </div>
       <div class="placeholder-text">
         <h3>No graph loaded</h3>
-        <p>Load the demo dataset or upload a CSV file</p>
+        <p>Upload a CSV file to begin exploring the graph</p>
       </div>
     </div>
   </div>
@@ -322,7 +311,7 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--tex
 <!-- ══ RIGHT PANEL ══ -->
 <div class="rpanel">
   <div class="rpanel-header">
-    <div class="panel-title">Results <span id="demo-mode-indicator"></span></div>
+    <div class="panel-title">Results</div>
     <div class="panel-sub" id="result-panel-sub">Select a task to run</div>
   </div>
   <div class="stats-grid">
@@ -433,14 +422,12 @@ let visEdges        = null;
 let showLabels      = true;
 let renderNodeIds   = null;
 let activeTask      = null;
-let isDemoMode      = false;
 let gnnOnline       = false;
 let gnnPublicUrl    = null;
 let lastUserTrainInfo = null;
 let tsneLoaded      = false;
 let tsnePoints      = null;
-let communityMeta   = null;  // demo community cards
-let tsneThemes      = null;  // demo theme map for t-SNE
+let tsneThemes      = null;
 let currentView     = 'graph';
 
 const algoState = { community: 'louvain', centrality: 'betweenness' };
@@ -541,98 +528,6 @@ checkGNNStatus();
 setInterval(checkGNNStatus, 15000);
 
 // ══════════════════════════════════════════════
-// DEMO MODE
-// ══════════════════════════════════════════════
-async function loadDemo() {
-  if (!gnnOnline) return toast('⚠ GNN service offline. Start python app.py first.');
-  const btn = document.getElementById('demo-load-btn');
-  btn.disabled = true;
-  btn.textContent = 'Loading…';
-  toast('⏳ Loading Farmer\'s Protest demo…');
-
-  try {
-    lastUserTrainInfo = null;
-    tsneLoaded = false;
-    tsnePoints = null;
-    tsneThemes = null;
-    document.getElementById('load-tsne-btn').textContent = 'Load t-SNE';
-
-    // Load demo from GNN service
-    const r = await fetch('/api/gnn/demo/load', { method: 'POST' });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error);
-
-    isDemoMode = true;
-    document.getElementById('demo-mode-indicator').innerHTML =
-      '<span class="demo-mode-tag">★ DEMO</span>';
-    document.getElementById('meta-mode').textContent = "Farmer's Protest";
-
-    // Load community data for display
-    const cr = await fetch('/api/gnn/demo/communities');
-    const cd = await cr.json();
-    communityMeta = cd.communities;
-
-    // Build a lightweight graphData from communities
-    graphData = { nodes: [], edges: [], isDemoMode: true, communities: cd.communities };
-    communityMeta.forEach(comm => {
-      comm.top_words.forEach(word => {
-        graphData.nodes.push({
-          id: word, degree: 1,
-          community: comm.id,
-          communities: { louvain: comm.id, leiden: comm.id },
-          centrality: { betweenness: 0, eigenvector: 0, degree: 0 },
-          theme: comm.theme, color: comm.color,
-        });
-      });
-    });
-
-    updateStats(d.nodes, d.edges, d.communities);
-    switchView('graph');
-    buildVisNetwork();
-    enableTaskButtons();
-    document.getElementById('load-tsne-btn').disabled = false;
-    document.getElementById('color-comm-btn').disabled = false;
-    const trainBtn = document.getElementById('train-gnn-btn');
-    if (trainBtn) trainBtn.disabled = true;
-
-    // Auto-show community panel
-    selectTask('community');
-    showDemoCommunities(cd.communities);
-
-    btn.textContent = '✓ Demo Loaded';
-    toast(`✅ Demo loaded — ${d.nodes.toLocaleString()} words, ${d.communities} communities`);
-
-  } catch(e) {
-    btn.disabled = false;
-    btn.textContent = 'Load Demo Dataset';
-    toast('⚠ ' + e.message);
-  }
-}
-
-function showDemoCommunities(communities) {
-  const res = document.getElementById('community-results');
-  let html = `<div style="font-size:0.72rem;color:var(--text2);margin-bottom:0.6rem;font-family:'IBM Plex Mono',monospace">${communities.length} DISCOURSE COMMUNITIES DETECTED</div>`;
-  communities.forEach(comm => {
-    html += `
-    <div class="comm-card" onclick="toggleCommCard(this)">
-      <div class="comm-card-header">
-        <div class="comm-color-bar" style="background:${comm.color}"></div>
-        <div class="comm-info">
-          <div class="comm-theme">${comm.theme}</div>
-          <div class="comm-meta">Community ${comm.id} · Louvain</div>
-        </div>
-        <div class="comm-size-badge">${comm.size}</div>
-      </div>
-      <div class="comm-words">
-        ${comm.top_words.map(w => `<span class="word-chip">${w}</span>`).join('')}
-      </div>
-    </div>`;
-  });
-  res.innerHTML = html;
-  document.getElementById('dl-comm-btn').disabled = false;
-  document.getElementById('s-comms').textContent = communities.length;
-}
-
 function toggleCommCard(el) {
   el.classList.toggle('expanded');
 }
@@ -646,13 +541,12 @@ async function loadTSNE() {
   document.getElementById('load-tsne-btn').textContent = 'Loading…';
 
   try {
-    const endpoint = isDemoMode ? '/api/gnn/demo/embeddings' : '/api/gnn/user/embeddings';
-    const r = await fetch(endpoint);
+    const r = await fetch('/api/gnn/user/embeddings');
     const d = await r.json();
     if (!r.ok) throw new Error(d.error);
 
     tsnePoints = d.points;
-    tsneThemes = isDemoMode ? d.communities : null;
+    tsneThemes = d.communities || null;
     tsneLoaded = true;
 
     switchView('tsne');
@@ -785,49 +679,62 @@ window.addEventListener('resize', () => {
 let searchTimer = null;
 function onSearchInput(val) {
   clearTimeout(searchTimer);
-  if (!val.trim() || !gnnOnline || !isDemoMode) {
-    const res = document.getElementById('search-results');
+  const res = document.getElementById('search-results');
+  if (!val.trim() || !graphData?.nodes?.length) {
     if (res) { res.innerHTML = ''; res.classList.remove('show'); }
     return;
   }
-  searchTimer = setTimeout(() => doSearch(val), 300);
+  searchTimer = setTimeout(() => doSearch(val), 150);
 }
 
-async function doSearch(query) {
-  try {
-    const r = await fetch('/api/gnn/demo/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: query.trim().toLowerCase() })
-    });
-    const d = await r.json();
-    if (!r.ok) return;
+function doSearch(query) {
+  const container = document.getElementById('search-results');
+  if (!container) return;
 
-    const container = document.getElementById('search-results');
-    if (!container) return;
-    if (!d.results || !d.results.length) {
-      container.innerHTML = `<div style="font-size:0.68rem;color:var(--text3);padding:0.3rem 0">No results for "${query}"</div>`;
-      container.classList.add('show');
-      return;
-    }
+  const q = query.trim().toLowerCase();
+  const exact = [];
+  const prefix = [];
+  const partial = [];
 
-    container.innerHTML = d.results.map(r => `
-      <div class="search-result-item" onclick="selectSearchResult('${r.term}')">
-        <div class="search-dot" style="background:${r.color}"></div>
-        <span class="search-term">${r.term}</span>
-        <span class="search-theme">${r.theme.split(' ').slice(0,2).join(' ')}</span>
-      </div>
-    `).join('');
+  (graphData?.nodes || []).forEach(node => {
+    const id = String(node.id || '').trim();
+    if (!id) return;
+    const lower = id.toLowerCase();
+    if (lower === q) exact.push(node);
+    else if (lower.startsWith(q)) prefix.push(node);
+    else if (lower.includes(q)) partial.push(node);
+  });
+
+  const matches = [...exact, ...prefix, ...partial].slice(0, 8);
+  if (!matches.length) {
+    container.innerHTML = `<div style="font-size:0.68rem;color:var(--text3);padding:0.3rem 0">No results for "${query}"</div>`;
     container.classList.add('show');
-  } catch(e) {}
+    return;
+  }
+
+  container.innerHTML = matches.map(node => {
+    const commId = node.communities?.[algoState.community] ?? node.community ?? 0;
+    const color = COMM_COLORS[Math.abs(Number(commId) || 0) % COMM_COLORS.length];
+    return `
+      <div class="search-result-item" onclick='selectSearchResult(${JSON.stringify(String(node.id))})'>
+        <div class="search-dot" style="background:${color}"></div>
+        <span class="search-term">${node.id}</span>
+        <span class="search-theme">Community ${commId}</span>
+      </div>
+    `;
+  }).join('');
+  container.classList.add('show');
 }
 
 function selectSearchResult(term) {
   document.getElementById('node-search-input').value = term;
   const res = document.getElementById('search-results');
   if (res) { res.innerHTML = ''; res.classList.remove('show'); }
-  // Auto-fill node prediction input
   document.getElementById('gnn-node-input').value = term;
+  if (network && visNodes && visNodes.get(String(term))) {
+    network.selectNodes([String(term)]);
+    network.focus(String(term), { scale: 1.2, animation: { duration: 400 } });
+  }
   selectTask('node-pred');
   toast(`Selected: ${term}`);
 }
@@ -893,9 +800,8 @@ async function runGNNNodePred() {
   res.innerHTML = `<div style="padding:1rem"><span class="spinner"></span> Running GraphSAGE inference…</div>`;
 
   try {
-    const endpoint = isDemoMode ? '/api/gnn/demo/predict-node' : '/api/gnn/user/predict-node';
-    const payload  = isDemoMode ? { term } : (connections.length ? { nodeId: term, connections } : { nodeId: term });
-    const r = await fetch(endpoint, {
+    const payload = connections.length ? { nodeId: term, connections } : { nodeId: term };
+    const r = await fetch('/api/gnn/user/predict-node', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -980,7 +886,6 @@ async function loadCSVFromBackend(file) {
     if (!r.ok) throw new Error(d.error || 'Failed to process graph');
     if (!d.nodes || !d.edges) throw new Error('Invalid server response.');
 
-    isDemoMode = false;
     lastUserTrainInfo = null;
     tsneLoaded = false;
     tsnePoints = null;
@@ -988,7 +893,6 @@ async function loadCSVFromBackend(file) {
     document.getElementById('load-tsne-btn').disabled = true;
     document.getElementById('load-tsne-btn').textContent = 'Load t-SNE';
     graphData  = d;
-    document.getElementById('demo-mode-indicator').innerHTML = '';
     document.getElementById('meta-mode').textContent = file.name;
 
     const totalNodes = d.meta?.total_nodes ?? d.nodes.length;
@@ -1175,10 +1079,6 @@ function setAlgo(cat, algo, el) {
 // COMMUNITY DETECTION
 // ══════════════════════════════════════════════
 function runCommunityDetection() {
-  if (isDemoMode) {
-    // Already shown from loadDemo
-    if (communityMeta) { showDemoCommunities(communityMeta); return; }
-  }
   if (!graphData) return;
   const res = document.getElementById('community-results');
   res.innerHTML = `<div style="padding:1rem"><span class="spinner"></span> Formatting results…</div>`;
@@ -1268,7 +1168,7 @@ async function runEdgePrediction() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ nodes: graphData.nodes, edges: graphData.edges,
                              newNodeId: name, newConnections: conns, topK,
-                             useGNN: (!isDemoMode && gnnOnline) })
+                             useGNN: gnnOnline })
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error);

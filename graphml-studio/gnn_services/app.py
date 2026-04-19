@@ -25,7 +25,6 @@ CORS(app)
 
 # ── Paths ──
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
-DEMO_DIR   = os.path.join(BASE_DIR, 'demo_data')
 MODELS_DIR = os.path.join(BASE_DIR, 'models')
 os.makedirs(MODELS_DIR, exist_ok=True)
 
@@ -33,13 +32,6 @@ device = torch.device('cpu')  # CPU-only for local deployment
 
 # ── In-memory state ──
 state = {
-    'demo_loaded':    False,
-    'demo_data':      None,   # PyG Data object
-    'demo_model_nc':  None,
-    'demo_model_lp':  None,
-    'demo_embeddings': None,  # np array (N, 2) t-SNE coords
-    'demo_nodes_df':  None,
-    'demo_meta':      None,   # communities.json content
     'user_data':      None,
     'user_model_nc':  None,
     'user_model_lp':  None,
@@ -306,9 +298,6 @@ def root():
             '/gnn/user/predict-node',
             '/gnn/user/predict-edge',
             '/gnn/user/embeddings',
-            '/gnn/demo/load',
-            '/gnn/demo/communities',
-            '/gnn/demo/embeddings',
         ],
     })
 
@@ -318,249 +307,9 @@ def root():
 def health():
     return jsonify({
         'status': 'ok',
-        'demo_loaded': state['demo_loaded'],
         'torch_version': torch.__version__,
         'device': str(device),
     })
-
-
-# ──────────────────────────────────────────────
-# DEMO MODE — Load pre-trained Farmer's Protest
-# ──────────────────────────────────────────────
-@app.route('/gnn/demo/load', methods=['POST'])
-def demo_load():
-    try:
-        nodes_path = os.path.join(DEMO_DIR, 'nodes_demo.csv')
-        edges_path = os.path.join(DEMO_DIR, 'edges_demo.csv')
-        emb_path   = os.path.join(DEMO_DIR, 'node_embeddings.csv')
-        meta_path  = os.path.join(DEMO_DIR, 'communities.json')
-        nc_path    = os.path.join(DEMO_DIR, 'best_sage_nc_v2.pt')
-        lp_path    = os.path.join(DEMO_DIR, 'best_sage_lp.pt')
-
-        for p in [nodes_path, edges_path, emb_path, meta_path, nc_path, lp_path]:
-            if not os.path.exists(p):
-                return jsonify({'error': f'Demo file missing: {os.path.basename(p)}'}), 400
-
-        # Load nodes + edges
-        nodes_df = pd.read_csv(nodes_path)
-        edges_df = pd.read_csv(edges_path)
-        state['demo_nodes_df'] = nodes_df
-
-        # Load community metadata
-        with open(meta_path) as f:
-            state['demo_meta'] = json.load(f)
-
-        # Build PyG data
-        data, term_to_idx, num_classes, scaler, feature_cols = build_pyg_data(nodes_df, edges_df)
-        data = data.to(device)
-        state['demo_data'] = data
-
-        # Load NC model
-        model_nc = GraphSAGE_NC(
-            in_channels=data.num_node_features,
-            hidden_channels=128,
-            out_channels=num_classes,
-        ).to(device)
-        model_nc.load_state_dict(torch.load(nc_path, map_location=device))
-        model_nc.eval()
-        state['demo_model_nc'] = model_nc
-        state['term_to_idx']   = term_to_idx
-        state['num_classes']   = num_classes
-
-        # Load LP model
-        model_lp = GraphSAGE_LP(
-            in_channels=data.num_node_features,
-            hidden_channels=128,
-            out_channels=64,
-        ).to(device)
-        model_lp.load_state_dict(torch.load(lp_path, map_location=device))
-        model_lp.eval()
-        state['demo_model_lp'] = model_lp
-
-        # Load pre-computed embeddings + compute t-SNE
-        emb_df = pd.read_csv(emb_path)
-        emb_cols = [c for c in emb_df.columns if c.startswith('emb_')]
-        embeddings = emb_df[emb_cols].values.astype(np.float32)
-
-        print(f'Computing t-SNE on {len(embeddings)} nodes...')
-        tsne   = make_tsne(n_components=2, perplexity=40, random_state=42, n_iter=1000)
-        emb_2d = tsne.fit_transform(embeddings)
-        state['demo_embeddings'] = emb_2d
-        state['demo_emb_df']     = emb_df
-        state['demo_loaded']     = True
-
-        print(f'Demo loaded: {len(nodes_df)} nodes, {len(edges_df)} edges')
-        return jsonify({
-            'status':      'ok',
-            'nodes':       len(nodes_df),
-            'edges':       len(edges_df),
-            'communities': num_classes,
-            'message':     "Farmer's Protest demo loaded successfully",
-        })
-
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
-
-
-# ──────────────────────────────────────────────
-# DEMO — Get t-SNE embeddings for visualisation
-# ──────────────────────────────────────────────
-@app.route('/gnn/demo/embeddings', methods=['GET'])
-def demo_embeddings():
-    if not state['demo_loaded']:
-        return jsonify({'error': 'Demo not loaded. Call /gnn/demo/load first.'}), 400
-    try:
-        emb_2d   = state['demo_embeddings']
-        emb_df   = state['demo_emb_df']
-        meta     = state['demo_meta']
-        nodes_df = state['demo_nodes_df']
-
-        points = []
-        for i, row in emb_df.iterrows():
-            comm_id = int(row['louvain_label'])
-            theme   = meta['themes'].get(str(comm_id), f'Community {comm_id}')
-            points.append({
-                'term':      row['term'],
-                'x':         float(emb_2d[i, 0]),
-                'y':         float(emb_2d[i, 1]),
-                'community': comm_id,
-                'theme':     theme,
-            })
-
-        return jsonify({
-            'points':      points,
-            'communities': meta['themes'],
-            'colors':      meta.get('colors', {}),
-        })
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
-
-
-# ──────────────────────────────────────────────
-# DEMO — Get community details (top words etc.)
-# ──────────────────────────────────────────────
-@app.route('/gnn/demo/communities', methods=['GET'])
-def demo_communities():
-    if not state['demo_loaded']:
-        return jsonify({'error': 'Demo not loaded.'}), 400
-    try:
-        nodes_df = state['demo_nodes_df']
-        meta     = state['demo_meta']
-        result   = []
-
-        for comm_id_str, theme in meta['themes'].items():
-            comm_id   = int(comm_id_str)
-            comm_rows = nodes_df[nodes_df['louvain_label'] == comm_id]
-            top_words = comm_rows.nlargest(12, 'tfidf')['term'].tolist() \
-                        if 'tfidf' in comm_rows.columns else \
-                        comm_rows.head(12)['term'].tolist()
-            result.append({
-                'id':        comm_id,
-                'theme':     theme,
-                'size':      len(comm_rows),
-                'top_words': top_words,
-                'color':     meta.get('colors', {}).get(comm_id_str, '#38bdf8'),
-            })
-
-        result.sort(key=lambda x: x['size'], reverse=True)
-        return jsonify({'communities': result})
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
-
-
-# ──────────────────────────────────────────────
-# DEMO — Node search
-# ──────────────────────────────────────────────
-@app.route('/gnn/demo/search', methods=['POST'])
-def demo_search():
-    if not state['demo_loaded']:
-        return jsonify({'error': 'Demo not loaded.'}), 400
-    try:
-        query    = request.json.get('query', '').strip().lower()
-        nodes_df = state['demo_nodes_df']
-        meta     = state['demo_meta']
-
-        if not query:
-            return jsonify({'error': 'Empty query.'}), 400
-
-        # Exact match first, then prefix match
-        exact   = nodes_df[nodes_df['term'] == query]
-        prefix  = nodes_df[nodes_df['term'].str.startswith(query)].head(8)
-        matches = pd.concat([exact, prefix]).drop_duplicates('term').head(8)
-
-        if matches.empty:
-            return jsonify({'results': [], 'message': f'No match for "{query}"'})
-
-        results = []
-        for _, row in matches.iterrows():
-            comm_id = int(row['louvain_label']) if 'louvain_label' in row else -1
-            theme   = meta['themes'].get(str(comm_id), f'Community {comm_id}')
-            results.append({
-                'term':      row['term'],
-                'community': comm_id,
-                'theme':     theme,
-                'tfidf':     float(row.get('tfidf', 0)),
-                'pmi_max':   float(row.get('pmi_max', 0)),
-                'color':     meta.get('colors', {}).get(str(comm_id), '#38bdf8'),
-            })
-
-        return jsonify({'results': results})
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
-
-
-# ──────────────────────────────────────────────
-# DEMO — Node classification inference
-# ──────────────────────────────────────────────
-@app.route('/gnn/demo/predict-node', methods=['POST'])
-def demo_predict_node():
-    if not state['demo_loaded']:
-        return jsonify({'error': 'Demo not loaded.'}), 400
-    try:
-        term         = request.json.get('term', '').strip().lower()
-        term_to_idx  = state['term_to_idx']
-        model_nc     = state['demo_model_nc']
-        data         = state['demo_data']
-        meta         = state['demo_meta']
-
-        if term not in term_to_idx:
-            return jsonify({'error': f'Term "{term}" not in vocabulary.'}), 400
-
-        idx = term_to_idx[term]
-        model_nc.eval()
-        with torch.no_grad():
-            logits = model_nc(data.x, data.edge_index)
-            probs  = torch.softmax(logits[idx], dim=0).cpu().numpy()
-
-        pred_class = int(np.argmax(probs))
-        confidence = float(probs[pred_class]) * 100
-        theme      = meta['themes'].get(str(pred_class), f'Community {pred_class}')
-
-        top5 = sorted(enumerate(probs.tolist()), key=lambda x: x[1], reverse=True)[:5]
-        top5_result = [
-            {
-                'community': c,
-                'theme':     meta['themes'].get(str(c), f'Community {c}'),
-                'probability': round(p * 100, 2),
-            }
-            for c, p in top5
-        ]
-
-        return jsonify({
-            'term':             term,
-            'predicted_community': pred_class,
-            'theme':            theme,
-            'confidence':       round(confidence, 2),
-            'top5':             top5_result,
-            'color':            meta.get('colors', {}).get(str(pred_class), '#38bdf8'),
-        })
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
 
 
 # ──────────────────────────────────────────────

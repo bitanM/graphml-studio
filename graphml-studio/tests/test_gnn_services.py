@@ -337,7 +337,6 @@ class TestHealthEndpoint:
         res  = flask_app.get('/health')
         data = json.loads(res.data)
         assert 'status' in data
-        assert 'demo_loaded' in data
         assert 'torch_version' in data
         assert 'device' in data
 
@@ -345,39 +344,6 @@ class TestHealthEndpoint:
         res  = flask_app.get('/health')
         data = json.loads(res.data)
         assert data['status'] == 'ok'
-
-
-class TestDemoEndpoints:
-    def test_demo_embeddings_requires_load(self, flask_app):
-        """Should return 400 if demo not loaded."""
-        res = flask_app.get('/gnn/demo/embeddings')
-        assert res.status_code == 400
-        data = json.loads(res.data)
-        assert 'error' in data
-
-    def test_demo_communities_requires_load(self, flask_app):
-        res = flask_app.get('/gnn/demo/communities')
-        assert res.status_code == 400
-
-    def test_demo_search_requires_load(self, flask_app):
-        res = flask_app.post('/gnn/demo/search',
-                             json={'query': 'farmers'},
-                             content_type='application/json')
-        assert res.status_code == 400
-
-    def test_demo_predict_requires_load(self, flask_app):
-        res = flask_app.post('/gnn/demo/predict-node',
-                             json={'term': 'farmers'},
-                             content_type='application/json')
-        assert res.status_code == 400
-
-    def test_demo_search_empty_query(self, flask_app):
-        """Empty query should return 400."""
-        res = flask_app.post('/gnn/demo/search',
-                             json={'query': ''},
-                             content_type='application/json')
-        assert res.status_code in (400, 400)
-
 
 class TestUserTrainEndpoint:
     def test_train_requires_nodes_and_edges(self, flask_app):

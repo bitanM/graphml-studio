@@ -1,7 +1,6 @@
 """
 Training pipeline for user-uploaded graphs.
-Used when a user uploads their own CSV — not used for demo mode
-(demo mode loads pre-trained weights directly).
+Used when a user uploads their own CSV.
 """
 
 import torch

@@ -217,31 +217,6 @@ async function handleGNNWake(req, res) {
 app.post('/api/gnn/wake', handleGNNWake);
 app.get('/api/gnn/wake', handleGNNWake);
 
-// ── Demo mode: load Farmer's Protest pre-trained model ──
-app.post('/api/gnn/demo/load', (req, res) => {
-  proxyToGNN('/gnn/demo/load', 'POST', {}, res);
-});
-
-// ── Demo mode: get t-SNE embeddings ──
-app.get('/api/gnn/demo/embeddings', (req, res) => {
-  proxyToGNN('/gnn/demo/embeddings', 'GET', null, res);
-});
-
-// ── Demo mode: get community details ──
-app.get('/api/gnn/demo/communities', (req, res) => {
-  proxyToGNN('/gnn/demo/communities', 'GET', null, res);
-});
-
-// ── Demo mode: node search ──
-app.post('/api/gnn/demo/search', (req, res) => {
-  proxyToGNN('/gnn/demo/search', 'POST', req.body, res);
-});
-
-// ── Demo mode: predict node community ──
-app.post('/api/gnn/demo/predict-node', (req, res) => {
-  proxyToGNN('/gnn/demo/predict-node', 'POST', req.body, res);
-});
-
 // ── User upload: train GNN on custom graph ──
 app.post('/api/gnn/train', (req, res) => {
   proxyToGNN('/gnn/train', 'POST', req.body, res);
