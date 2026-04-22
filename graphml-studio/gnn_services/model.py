@@ -27,27 +27,30 @@ class GraphSAGE_NC(torch.nn.Module):
         self.conv1 = SAGEConv(in_channels, hidden_channels, aggr='mean')
         self.conv2 = SAGEConv(hidden_channels, hidden_channels, aggr='mean')
         self.conv3 = SAGEConv(hidden_channels, out_channels, aggr='mean')
+        self.skip1 = torch.nn.Linear(in_channels, hidden_channels, bias=False)
+        self.skip2 = torch.nn.Linear(hidden_channels, hidden_channels, bias=False)
+        self.skip3 = torch.nn.Linear(hidden_channels, out_channels, bias=False)
         self.bn1   = torch.nn.BatchNorm1d(hidden_channels)
         self.bn2   = torch.nn.BatchNorm1d(hidden_channels)
         self.drop  = dropout
 
     def forward(self, x, edge_index):
-        x = self.conv1(x, edge_index)
-        x = self.bn1(x)
-        x = F.relu(x)
-        x = F.dropout(x, p=self.drop, training=self.training)
-        x = self.conv2(x, edge_index)
-        x = self.bn2(x)
-        x = F.relu(x)
-        x = F.dropout(x, p=self.drop, training=self.training)
-        x = self.conv3(x, edge_index)
-        return x
+        h1 = self.conv1(x, edge_index) + self.skip1(x)
+        h1 = self.bn1(h1)
+        h1 = F.relu(h1)
+        h1 = F.dropout(h1, p=self.drop, training=self.training)
+        h2 = self.conv2(h1, edge_index) + self.skip2(h1)
+        h2 = self.bn2(h2)
+        h2 = F.relu(h2)
+        h2 = F.dropout(h2, p=self.drop, training=self.training)
+        out = self.conv3(h2, edge_index) + self.skip3(h2)
+        return out
 
     def embed(self, x, edge_index):
         """Return 128-dim penultimate layer embeddings."""
-        x = F.relu(self.bn1(self.conv1(x, edge_index)))
-        x = F.relu(self.bn2(self.conv2(x, edge_index)))
-        return x
+        h1 = F.relu(self.bn1(self.conv1(x, edge_index) + self.skip1(x)))
+        h2 = F.relu(self.bn2(self.conv2(h1, edge_index) + self.skip2(h1)))
+        return h2
 
 
 class GraphSAGE_LP(torch.nn.Module):
@@ -60,16 +63,18 @@ class GraphSAGE_LP(torch.nn.Module):
         from torch_geometric.nn import SAGEConv
         self.conv1 = SAGEConv(in_channels, hidden_channels, aggr='mean')
         self.conv2 = SAGEConv(hidden_channels, out_channels, aggr='mean')
+        self.skip1 = torch.nn.Linear(in_channels, hidden_channels, bias=False)
+        self.skip2 = torch.nn.Linear(hidden_channels, out_channels, bias=False)
         self.bn1   = torch.nn.BatchNorm1d(hidden_channels)
         self.drop  = dropout
 
     def encode(self, x, edge_index):
-        x = self.conv1(x, edge_index)
-        x = self.bn1(x)
-        x = F.relu(x)
-        x = F.dropout(x, p=self.drop, training=self.training)
-        x = self.conv2(x, edge_index)
-        return x
+        h1 = self.conv1(x, edge_index) + self.skip1(x)
+        h1 = self.bn1(h1)
+        h1 = F.relu(h1)
+        h1 = F.dropout(h1, p=self.drop, training=self.training)
+        h2 = self.conv2(h1, edge_index) + self.skip2(h1)
+        return h2
 
     def decode(self, z, edge_label_index):
         src = z[edge_label_index[0]]
@@ -118,6 +123,8 @@ def build_pyg_data(nodes_df, edges_df,
         'tf', 'df', 'tfidf', 'pmi_max',
         'degree', 'strength', 'mean_weight', 'total_coocc',
         'max_weight', 'min_weight', 'weight_std',
+        'avg_neighbor_degree', 'triangle_count', 'clustering_coeff',
+        'two_hop_reach', 'core_number', 'pagerank',
     ]
     feature_cols = [c for c in possible_features if c in labeled.columns]
 
@@ -137,7 +144,9 @@ def build_pyg_data(nodes_df, edges_df,
     # Log-scale heavy-tailed columns
     for i, col in enumerate(feature_cols):
         if col in ('tf', 'df', 'tfidf', 'degree', 'strength', 'total_coocc',
-                   'max_weight', 'min_weight', 'weight_std'):
+                   'max_weight', 'min_weight', 'weight_std',
+                   'avg_neighbor_degree', 'triangle_count', 'two_hop_reach',
+                   'core_number'):
             X_raw[:, i] = np.log1p(X_raw[:, i])
 
     scaler   = StandardScaler()

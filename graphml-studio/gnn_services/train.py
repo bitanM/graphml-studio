@@ -14,6 +14,11 @@ from model import GraphSAGE_NC, GraphSAGE_LP
 device = torch.device('cpu')
 
 
+def set_training_seed(seed=42):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+
 def make_stratified_node_split(data, train_frac=0.10, val_frac=0.15, seed=42):
     """
     Build stratified train/val/test masks so each community contributes
@@ -75,16 +80,17 @@ def make_stratified_node_split(data, train_frac=0.10, val_frac=0.15, seed=42):
     return data
 
 
-def train_node_classification(data, num_classes, epochs=100, hidden=128,
-                               lr=0.005, dropout=0.3, patience=15,
-                               train_frac=0.10, val_frac=0.15):
+def train_node_classification(data, num_classes, epochs=120, hidden=128,
+                               lr=0.004, dropout=0.25, patience=20,
+                               train_frac=0.15, val_frac=0.15):
     """
     Train GraphSAGE for node classification on user-uploaded graph.
     Returns trained model + metrics dict.
     """
+    set_training_seed(42)
     # Stratified split gives the classifier a more stable view of every class.
     if data.num_nodes < 20:
-        train_frac = max(train_frac, 0.20)
+        train_frac = max(train_frac, 0.25)
         val_frac = 0.20
     data = make_stratified_node_split(data, train_frac=train_frac, val_frac=val_frac)
     if not data.val_mask.any():
@@ -103,9 +109,9 @@ def train_node_classification(data, num_classes, epochs=100, hidden=128,
     class_weights = (class_weights / class_weights.sum() * num_classes).to(device)
 
     model     = GraphSAGE_NC(data.num_node_features, hidden, num_classes, dropout).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=5e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='max', factor=0.5, patience=8)
+        optimizer, mode='max', factor=0.5, patience=10)
 
     best_val_f1  = 0
     patience_cnt = 0
@@ -160,13 +166,14 @@ def train_node_classification(data, num_classes, epochs=100, hidden=128,
     return model, metrics
 
 
-def train_link_prediction(data, epochs=80, hidden=128,
-                           lr=0.001, dropout=0.3, patience=15):
+def train_link_prediction(data, epochs=100, hidden=128, out_channels=96,
+                           lr=0.0015, dropout=0.25, patience=18):
     """
     Train GraphSAGE for link prediction on user-uploaded graph.
     Returns trained model + metrics dict.
     """
     from sklearn.metrics import average_precision_score
+    set_training_seed(42)
 
     # Split edges (5% train, 15% val, 80% test by default)
     train_frac = 0.05
@@ -183,8 +190,11 @@ def train_link_prediction(data, epochs=80, hidden=128,
     val_data   = val_data.to(device)
     test_data  = test_data.to(device)
 
-    model     = GraphSAGE_LP(data.num_node_features, hidden, 64, dropout).to(device)
+    model     = GraphSAGE_LP(data.num_node_features, hidden, out_channels, dropout).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=5e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='max', factor=0.5, patience=8
+    )
 
     best_val_auc = 0
     patience_cnt = 0
@@ -206,6 +216,8 @@ def train_link_prediction(data, epochs=80, hidden=128,
             prob = torch.sigmoid(out).cpu().numpy()
             true = val_data.edge_label.cpu().numpy()
             val_auc = roc_auc_score(true, prob)
+
+        scheduler.step(val_auc)
 
         if val_auc > best_val_auc:
             best_val_auc = val_auc

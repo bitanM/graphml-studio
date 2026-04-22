@@ -219,6 +219,12 @@ class TestUserFeatureEngineering:
         assert row_a['min_weight'] == 2.0
         assert row_a['total_coocc'] == 6.0
         assert 'weight_std' in enriched.columns
+        assert row_a['avg_neighbor_degree'] == 2.0
+        assert row_a['triangle_count'] == 1.0
+        assert row_a['clustering_coeff'] == 1.0
+        assert row_a['two_hop_reach'] == 0.0
+        assert row_a['core_number'] == 2.0
+        assert row_a['pagerank'] > 0.0
 
 
 class TestGraphSAGENC:

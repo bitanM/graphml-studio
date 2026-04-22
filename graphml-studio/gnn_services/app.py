@@ -37,6 +37,7 @@ state = {
     'user_model_lp':  None,
     'user_embeddings': None,
     'user_nodes_df':  None,
+    'user_adjacency': None,
     'user_term_to_idx': None,
     'user_scaler': None,
     'user_feature_cols': None,
@@ -146,6 +147,95 @@ def parse_connections(raw_connections):
         weights.append(w)
     return ids, weights
 
+def build_graph_structures(node_ids, edges_df):
+    """
+    Build adjacency + weighted adjacency maps from an undirected edge list.
+    """
+    adjacency = {str(nid): set() for nid in node_ids}
+    weighted_adjacency = {str(nid): {} for nid in node_ids}
+
+    if edges_df is None or edges_df.empty:
+        return adjacency, weighted_adjacency
+
+    src_col = 'source' if 'source' in edges_df.columns else 'from'
+    tgt_col = 'target' if 'target' in edges_df.columns else 'to'
+
+    for _, row in edges_df.iterrows():
+        src = str(row.get(src_col, '')).strip()
+        tgt = str(row.get(tgt_col, '')).strip()
+        if not src or not tgt or src == tgt:
+            continue
+        try:
+            weight = float(row.get('weight', 1.0))
+        except Exception:
+            weight = 1.0
+
+        adjacency.setdefault(src, set()).add(tgt)
+        adjacency.setdefault(tgt, set()).add(src)
+        weighted_adjacency.setdefault(src, {})
+        weighted_adjacency.setdefault(tgt, {})
+        weighted_adjacency[src][tgt] = weighted_adjacency[src].get(tgt, 0.0) + weight
+        weighted_adjacency[tgt][src] = weighted_adjacency[tgt].get(src, 0.0) + weight
+
+    return adjacency, weighted_adjacency
+
+def compute_core_numbers(adjacency):
+    """
+    Lightweight k-core decomposition for undirected graphs.
+    """
+    work = {node: set(neighbors) for node, neighbors in adjacency.items()}
+    remaining = set(work.keys())
+    core = {node: 0 for node in work}
+    k = 0
+
+    while remaining:
+        changed = True
+        while changed:
+            changed = False
+            removable = [node for node in list(remaining) if len(work[node] & remaining) <= k]
+            if removable:
+                changed = True
+                for node in removable:
+                    remaining.remove(node)
+                    core[node] = k
+        k += 1
+
+    return core
+
+def compute_weighted_pagerank(weighted_adjacency, damping=0.85, steps=40):
+    """
+    Weighted PageRank without adding a NetworkX dependency.
+    """
+    nodes = list(weighted_adjacency.keys())
+    if not nodes:
+        return {}
+
+    n = len(nodes)
+    rank = {node: 1.0 / n for node in nodes}
+
+    for _ in range(steps):
+        new_rank = {node: (1.0 - damping) / n for node in nodes}
+        dangling_mass = 0.0
+
+        for node, nbrs in weighted_adjacency.items():
+            out_weight = float(sum(nbrs.values()))
+            if out_weight <= 0:
+                dangling_mass += rank[node]
+                continue
+            share = damping * rank[node] / out_weight
+            for nbr, weight in nbrs.items():
+                new_rank[nbr] += share * float(weight)
+
+        if dangling_mass:
+            spread = damping * dangling_mass / n
+            for node in nodes:
+                new_rank[node] += spread
+
+        total = sum(new_rank.values()) or 1.0
+        rank = {node: val / total for node, val in new_rank.items()}
+
+    return rank
+
 def enrich_user_nodes_df(nodes_df, edges_df, id_col='id'):
     """
     Add structural features for user-uploaded graphs so the classifier learns
@@ -168,6 +258,8 @@ def enrich_user_nodes_df(nodes_df, edges_df, id_col='id'):
     derived_cols = [
         'degree', 'strength', 'mean_weight',
         'max_weight', 'min_weight', 'weight_std', 'total_coocc',
+        'avg_neighbor_degree', 'triangle_count', 'clustering_coeff',
+        'two_hop_reach', 'core_number', 'pagerank',
     ]
 
     if edges_df is None or edges_df.empty:
@@ -188,6 +280,10 @@ def enrich_user_nodes_df(nodes_df, edges_df, id_col='id'):
     else:
         edge_df['weight'] = 1.0
 
+    adjacency, weighted_adjacency = build_graph_structures(nodes_df[id_col].tolist(), edge_df)
+    core_numbers = compute_core_numbers(adjacency)
+    pagerank_scores = compute_weighted_pagerank(weighted_adjacency)
+
     edge_long = pd.concat([
         edge_df[[src_col, 'weight']].rename(columns={src_col: id_col}),
         edge_df[[tgt_col, 'weight']].rename(columns={tgt_col: id_col}),
@@ -204,15 +300,53 @@ def enrich_user_nodes_df(nodes_df, edges_df, id_col='id'):
     agg['weight_std'] = agg['weight_std'].fillna(0.0)
     agg['total_coocc'] = agg['strength']
 
+    structural_rows = []
+    for node_id in nodes_df[id_col].tolist():
+        nid = str(node_id)
+        neighbors = adjacency.get(nid, set())
+        degree = len(neighbors)
+        neighbor_degrees = [len(adjacency.get(nb, set())) for nb in neighbors]
+        avg_neighbor_degree = float(np.mean(neighbor_degrees)) if neighbor_degrees else 0.0
+
+        shared_links = 0
+        for nb in neighbors:
+            shared_links += len(neighbors & adjacency.get(nb, set()))
+        triangle_count = float(shared_links / 2.0)
+
+        if degree > 1:
+            clustering_coeff = float((2.0 * triangle_count) / (degree * (degree - 1)))
+        else:
+            clustering_coeff = 0.0
+
+        two_hop = set()
+        for nb in neighbors:
+            two_hop.update(adjacency.get(nb, set()))
+        two_hop.discard(nid)
+        two_hop.difference_update(neighbors)
+
+        structural_rows.append({
+            id_col: nid,
+            'avg_neighbor_degree': avg_neighbor_degree,
+            'triangle_count': triangle_count,
+            'clustering_coeff': clustering_coeff,
+            'two_hop_reach': float(len(two_hop)),
+            'core_number': float(core_numbers.get(nid, 0)),
+            'pagerank': float(pagerank_scores.get(nid, 0.0)),
+        })
+
+    structural_df = pd.DataFrame(structural_rows).set_index(id_col)
+
     nodes_df = nodes_df.set_index(id_col, drop=False)
     for col in derived_cols:
         existing = pd.to_numeric(nodes_df[col], errors='coerce') if col in nodes_df.columns else pd.Series(index=nodes_df.index, dtype=float)
         incoming = agg[col] if col in agg.columns else pd.Series(index=nodes_df.index, dtype=float)
+        if col in structural_df.columns:
+            incoming = structural_df[col].combine_first(incoming)
         nodes_df[col] = existing.fillna(incoming).fillna(0.0)
 
     return nodes_df.reset_index(drop=True)
 
-def build_new_node_feature(feature_cols, scaler, conn_ids, conn_weights):
+def build_new_node_feature(feature_cols, scaler, conn_ids, conn_weights, nodes_df=None, adjacency=None):
     """
     Build a single-node feature vector matching training feature_cols,
     using connection-derived statistics (degree, strength, mean_weight, etc.).
@@ -224,6 +358,50 @@ def build_new_node_feature(feature_cols, scaler, conn_ids, conn_weights):
     max_weight = float(max(conn_weights)) if conn_weights else 0.0
     min_weight = float(min(conn_weights)) if conn_weights else 0.0
     weight_std = float(np.std(conn_weights)) if conn_weights else 0.0
+    valid_connections = [str(nid) for nid in conn_ids]
+    node_lookup = None
+    if nodes_df is not None and not nodes_df.empty:
+        key_col = 'id' if 'id' in nodes_df.columns else nodes_df.columns[0]
+        node_lookup = nodes_df.set_index(key_col, drop=False)
+        valid_connections = [nid for nid in valid_connections if nid in node_lookup.index]
+
+    if adjacency is None:
+        adjacency = {}
+
+    avg_neighbor_degree = 0.0
+    triangle_count = 0.0
+    clustering_coeff = 0.0
+    two_hop_reach = 0.0
+    core_number = float(min(degree, 1)) if degree else 0.0
+    pagerank = 0.0
+
+    if valid_connections and node_lookup is not None:
+        conn_frame = node_lookup.loc[valid_connections]
+        if isinstance(conn_frame, pd.Series):
+            conn_frame = conn_frame.to_frame().T
+
+        if 'degree' in conn_frame.columns:
+            avg_neighbor_degree = float(pd.to_numeric(conn_frame['degree'], errors='coerce').fillna(0.0).mean())
+        if 'core_number' in conn_frame.columns:
+            core_vals = pd.to_numeric(conn_frame['core_number'], errors='coerce').fillna(0.0)
+            core_number = float(min(degree, max(1.0, round(float(core_vals.mean()))))) if degree else 0.0
+        if 'pagerank' in conn_frame.columns:
+            pagerank = float(pd.to_numeric(conn_frame['pagerank'], errors='coerce').fillna(0.0).mean())
+
+    if valid_connections and adjacency:
+        conn_set = set(valid_connections)
+        linked_pairs = 0
+        for nid in conn_set:
+            linked_pairs += len(conn_set & adjacency.get(nid, set()))
+        triangle_count = float(linked_pairs / 2.0)
+        if degree > 1:
+            clustering_coeff = float((2.0 * triangle_count) / (degree * (degree - 1)))
+
+        two_hop = set()
+        for nid in conn_set:
+            two_hop.update(adjacency.get(nid, set()))
+        two_hop.difference_update(conn_set)
+        two_hop_reach = float(len(two_hop))
 
     base = {
         'degree': degree,
@@ -233,6 +411,12 @@ def build_new_node_feature(feature_cols, scaler, conn_ids, conn_weights):
         'max_weight': max_weight,
         'min_weight': min_weight,
         'weight_std': weight_std,
+        'avg_neighbor_degree': avg_neighbor_degree,
+        'triangle_count': triangle_count,
+        'clustering_coeff': clustering_coeff,
+        'two_hop_reach': two_hop_reach,
+        'core_number': core_number,
+        'pagerank': pagerank,
         'tf': 0.0,
         'df': 0.0,
         'tfidf': 0.0,
@@ -246,7 +430,9 @@ def build_new_node_feature(feature_cols, scaler, conn_ids, conn_weights):
 
     for i, col in enumerate(feature_cols):
         if col in ('tf', 'df', 'tfidf', 'degree', 'strength', 'total_coocc',
-                   'max_weight', 'min_weight', 'weight_std'):
+                   'max_weight', 'min_weight', 'weight_std',
+                   'avg_neighbor_degree', 'triangle_count', 'two_hop_reach',
+                   'core_number'):
             vec[:, i] = np.log1p(vec[:, i])
 
     vec_scaled = scaler.transform(vec).astype(np.float32)
@@ -328,11 +514,11 @@ def user_train():
             return jsonify({'error': 'nodes and edges required.'}), 400
 
         # Training hyperparams (fast vs full)
-        nc_epochs = int(payload.get('nc_epochs', 20 if mode == 'fast' else 100))
-        lp_epochs = int(payload.get('lp_epochs', 20 if mode == 'fast' else 80))
-        hidden    = int(payload.get('hidden', 64 if mode == 'fast' else 128))
-        lp_out    = int(payload.get('lp_out', 64))
-        nc_train_frac = float(payload.get('nc_train_frac', 0.05 if mode == 'fast' else 0.10))
+        nc_epochs = int(payload.get('nc_epochs', 32 if mode == 'fast' else 120))
+        lp_epochs = int(payload.get('lp_epochs', 30 if mode == 'fast' else 100))
+        hidden    = int(payload.get('hidden', 96 if mode == 'fast' else 128))
+        lp_out    = int(payload.get('lp_out', 64 if mode == 'fast' else 96))
+        nc_train_frac = float(payload.get('nc_train_frac', 0.08 if mode == 'fast' else 0.15))
         nc_val_frac = float(payload.get('nc_val_frac', 0.15))
         train_tag = str(round(nc_train_frac, 3)).replace('.', 'p')
         val_tag = str(round(nc_val_frac, 3)).replace('.', 'p')
@@ -392,6 +578,7 @@ def user_train():
             state['user_data']     = data
             state['user_model_nc'] = model_nc
             state['user_model_lp'] = model_lp
+            state['user_adjacency'] = adjacency
             state['user_term_to_idx'] = term_to_idx
             state['user_nodes_df'] = nodes_df
             state['user_scaler'] = scaler
@@ -406,6 +593,7 @@ def user_train():
                 'lp_epochs': meta.get('lp_epochs', lp_epochs),
                 'nc_train_frac': meta.get('nc_train_frac', nc_train_frac),
                 'nc_val_frac': meta.get('nc_val_frac', nc_val_frac),
+                'lp_out': meta.get('lp_out', lp_out),
             }
 
             with torch.no_grad():
@@ -441,6 +629,7 @@ def user_train():
         state['user_model_nc'] = model_nc
         state['user_term_to_idx'] = term_to_idx
         state['user_nodes_df'] = nodes_df
+        state['user_adjacency'] = adjacency
         state['user_scaler'] = scaler
         state['user_feature_cols'] = feature_cols
         state['user_graph_hash'] = cache_id
@@ -453,6 +642,7 @@ def user_train():
             'lp_epochs': lp_epochs,
             'nc_train_frac': nc_train_frac,
             'nc_val_frac': nc_val_frac,
+            'lp_out': lp_out,
         }
 
         # Compute embeddings + t-SNE
@@ -467,7 +657,7 @@ def user_train():
 
         # Train LP
         model_lp, lp_metrics = train_link_prediction(
-            data, epochs=lp_epochs, hidden=hidden
+            data, epochs=lp_epochs, hidden=hidden, out_channels=lp_out
         )
         model_lp.eval()
         state['user_model_lp'] = model_lp
@@ -559,6 +749,8 @@ def user_predict_node():
         data         = state['user_data']
         scaler       = state['user_scaler']
         feature_cols = state['user_feature_cols']
+        nodes_df      = state['user_nodes_df']
+        adjacency     = state.get('user_adjacency')
 
         if not node_id:
             return jsonify({'error': 'nodeId required.'}), 400
@@ -580,7 +772,9 @@ def user_predict_node():
             if scaler is None or feature_cols is None:
                 return jsonify({'error': 'Model metadata missing. Retrain the GNN.'}), 400
 
-            new_feat = build_new_node_feature(feature_cols, scaler, conn_ids, conn_weights)
+            new_feat = build_new_node_feature(
+                feature_cols, scaler, conn_ids, conn_weights, nodes_df, adjacency
+            )
             x_ext, edge_index_ext, idx, _ = build_inductive_graph(
                 data, term_to_idx, new_feat, conn_ids
             )
@@ -637,6 +831,8 @@ def user_predict_edge():
         data         = state['user_data']
         scaler       = state['user_scaler']
         feature_cols = state['user_feature_cols']
+        nodes_df      = state['user_nodes_df']
+        adjacency     = state.get('user_adjacency')
 
         # Build graph (existing or inductive)
         if node_id in term_to_idx:
@@ -657,7 +853,9 @@ def user_predict_edge():
             if scaler is None or feature_cols is None:
                 return jsonify({'error': 'Model metadata missing. Retrain the GNN.'}), 400
 
-            new_feat = build_new_node_feature(feature_cols, scaler, conn_ids, conn_weights)
+            new_feat = build_new_node_feature(
+                feature_cols, scaler, conn_ids, conn_weights, nodes_df, adjacency
+            )
             x_use, edge_index_use, node_idx, neighbor_idxs = build_inductive_graph(
                 data, term_to_idx, new_feat, conn_ids
             )
