@@ -537,6 +537,7 @@ def user_train():
             edges_df = edges_df.rename(columns={'from': 'source', 'to': 'target'})
 
         nodes_df = enrich_user_nodes_df(nodes_df, edges_df, id_col='id')
+        adjacency, _ = build_graph_structures(nodes_df['id'].tolist(), edges_df)
 
         # Need at least degree as a feature — compute if missing
         if 'degree' not in nodes_df.columns:
