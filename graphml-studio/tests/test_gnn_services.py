@@ -226,6 +226,18 @@ class TestUserFeatureEngineering:
         assert row_a['core_number'] == 2.0
         assert row_a['pagerank'] > 0.0
 
+    def test_collapse_known_connections_merges_duplicates(self):
+        from app import collapse_known_connections
+
+        ids, weights = collapse_known_connections(
+            ['a', 'b', 'a', 'c', 'missing'],
+            [1.0, 2.0, 3.0, 4.0, 5.0],
+            valid_ids={'a', 'b', 'c'}
+        )
+
+        assert ids == ['a', 'b', 'c']
+        assert weights == [4.0, 2.0, 4.0]
+
 
 class TestGraphSAGENC:
     """Tests for GraphSAGE_NC model architecture."""
@@ -435,6 +447,7 @@ class TestTrainingPipeline:
         assert 'macro_f1' in metrics
         assert 'train_fraction' in metrics
         assert 'val_fraction' in metrics
+        assert metrics['inference_scope'] == 'full_graph'
         assert 0.0 <= metrics['accuracy'] <= 1.0
         assert 0.0 <= metrics['macro_f1'] <= 1.0
 

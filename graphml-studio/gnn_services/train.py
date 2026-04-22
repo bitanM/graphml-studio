@@ -19,6 +19,34 @@ def set_training_seed(seed=42):
     torch.manual_seed(seed)
 
 
+def train_full_graph_classifier(data, num_classes, epochs, hidden, lr, dropout):
+    """
+    Fit a deployment model on all labeled nodes after evaluation training.
+    This improves inference consistency on the current graph while keeping
+    split-based metrics honest.
+    """
+    model = GraphSAGE_NC(data.num_node_features, hidden, num_classes, dropout).to(device)
+
+    labels = data.y.cpu()
+    class_counts = torch.bincount(labels, minlength=num_classes).float()
+    class_weights = 1.0 / (class_counts + 1e-6)
+    class_weights = (class_weights / class_weights.sum() * num_classes).to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    full_mask = torch.ones(int(data.num_nodes), dtype=torch.bool, device=data.x.device)
+
+    for _ in range(max(1, int(epochs))):
+        model.train()
+        optimizer.zero_grad()
+        out = model(data.x, data.edge_index)
+        loss = F.cross_entropy(out[full_mask], data.y[full_mask], weight=class_weights)
+        loss.backward()
+        optimizer.step()
+
+    model.eval()
+    return model
+
+
 def make_stratified_node_split(data, train_frac=0.10, val_frac=0.15, seed=42):
     """
     Build stratified train/val/test masks so each community contributes
@@ -116,6 +144,7 @@ def train_node_classification(data, num_classes, epochs=120, hidden=128,
     best_val_f1  = 0
     patience_cnt = 0
     best_state   = None
+    best_epoch   = 1
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -140,6 +169,7 @@ def train_node_classification(data, num_classes, epochs=120, hidden=128,
             best_val_f1  = val_f1
             patience_cnt = 0
             best_state   = {k: v.clone() for k, v in model.state_dict().items()}
+            best_epoch   = epoch
         else:
             patience_cnt += 1
             if patience_cnt >= patience:
@@ -160,10 +190,21 @@ def train_node_classification(data, num_classes, epochs=120, hidden=128,
         'macro_f1': round(float(f1_score(truth, preds, average='macro',
                                           zero_division=0)), 4),
         'epochs_trained': epoch,
+        'best_epoch': best_epoch,
         'train_fraction': round(float(train_frac), 3),
         'val_fraction': round(float(val_frac), 3),
+        'inference_scope': 'full_graph',
     }
-    return model, metrics
+    deploy_model = train_full_graph_classifier(
+        data=data,
+        num_classes=num_classes,
+        epochs=best_epoch,
+        hidden=hidden,
+        lr=lr,
+        dropout=dropout,
+    )
+    metrics['deploy_epochs'] = int(best_epoch)
+    return deploy_model, metrics
 
 
 def train_link_prediction(data, epochs=100, hidden=128, out_channels=96,

@@ -29,6 +29,7 @@ MODELS_DIR = os.path.join(BASE_DIR, 'models')
 os.makedirs(MODELS_DIR, exist_ok=True)
 
 device = torch.device('cpu')  # CPU-only for local deployment
+MIN_INDUCTIVE_CONNECTIONS = 4
 
 # ── In-memory state ──
 state = {
@@ -146,6 +147,24 @@ def parse_connections(raw_connections):
         ids.append(nid)
         weights.append(w)
     return ids, weights
+
+def collapse_known_connections(conn_ids, conn_weights, valid_ids=None):
+    """
+    Deduplicate connection IDs while preserving order and summing repeated weights.
+    """
+    merged = {}
+    order = []
+    for nid, weight in zip(conn_ids or [], conn_weights or []):
+        key = str(nid).strip()
+        if not key:
+            continue
+        if valid_ids is not None and key not in valid_ids:
+            continue
+        if key not in merged:
+            merged[key] = 0.0
+            order.append(key)
+        merged[key] += float(weight)
+    return order, [merged[nid] for nid in order]
 
 def build_graph_structures(node_ids, edges_df):
     """
@@ -595,6 +614,7 @@ def user_train():
                 'nc_train_frac': meta.get('nc_train_frac', nc_train_frac),
                 'nc_val_frac': meta.get('nc_val_frac', nc_val_frac),
                 'lp_out': meta.get('lp_out', lp_out),
+                'nc_inference_scope': meta.get('nc_inference_scope', 'full_graph'),
             }
 
             with torch.no_grad():
@@ -644,6 +664,7 @@ def user_train():
             'nc_train_frac': nc_train_frac,
             'nc_val_frac': nc_val_frac,
             'lp_out': lp_out,
+            'nc_inference_scope': 'full_graph',
         }
 
         # Compute embeddings + t-SNE
@@ -676,6 +697,7 @@ def user_train():
                 'lp_epochs':   lp_epochs,
                 'nc_train_frac': nc_train_frac,
                 'nc_val_frac': nc_val_frac,
+                'nc_inference_scope': 'full_graph',
                 'nodes':       len(nodes_df),
                 'edges':       len(edges_df),
                 'communities': num_classes,
@@ -768,8 +790,14 @@ def user_predict_node():
         else:
             conn_raw = payload.get('connections') or payload.get('newConnections') or []
             conn_ids, conn_weights = parse_connections(conn_raw)
-            if not conn_ids:
-                return jsonify({'error': f'Node "{node_id}" not found. Provide connections to existing nodes.'}), 400
+            conn_ids, conn_weights = collapse_known_connections(conn_ids, conn_weights, set(term_to_idx.keys()))
+            if len(conn_ids) < MIN_INDUCTIVE_CONNECTIONS:
+                return jsonify({
+                    'error': (
+                        f'Node "{node_id}" is unseen. Provide at least '
+                        f'{MIN_INDUCTIVE_CONNECTIONS} known connections from the graph.'
+                    )
+                }), 400
             if scaler is None or feature_cols is None:
                 return jsonify({'error': 'Model metadata missing. Retrain the GNN.'}), 400
 
@@ -849,8 +877,14 @@ def user_predict_edge():
         else:
             conn_raw = payload.get('connections') or payload.get('newConnections') or []
             conn_ids, conn_weights = parse_connections(conn_raw)
-            if not conn_ids:
-                return jsonify({'error': f'Node "{node_id}" not found. Provide connections to existing nodes.'}), 400
+            conn_ids, conn_weights = collapse_known_connections(conn_ids, conn_weights, set(term_to_idx.keys()))
+            if len(conn_ids) < MIN_INDUCTIVE_CONNECTIONS:
+                return jsonify({
+                    'error': (
+                        f'Node "{node_id}" is unseen. Provide at least '
+                        f'{MIN_INDUCTIVE_CONNECTIONS} known connections from the graph.'
+                    )
+                }), 400
             if scaler is None or feature_cols is None:
                 return jsonify({'error': 'Model metadata missing. Retrain the GNN.'}), 400
 

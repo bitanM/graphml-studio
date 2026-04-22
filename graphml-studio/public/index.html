@@ -370,7 +370,7 @@ color:var(--text);min-height:100vh;overflow:hidden;}
         <div class="field-label">Known connections (comma-separated)</div>
         <input class="field-input" type="text" id="gnn-node-connections" placeholder="e.g. nodeA, nodeB">
       </div>
-      <div class="inline-note" id="gnn-node-hint">For unseen nodes, add at least one existing connection to enable inductive prediction.</div>
+      <div class="inline-note" id="gnn-node-hint">For unseen nodes, add at least four existing graph connections so the inductive prediction is stable.</div>
       <button class="run-btn" onclick="runGNNNodePred()" id="run-node-btn" disabled style="margin-top:0.4rem">▶ PREDICT COMMUNITY</button>
     </div>
     <div class="results-body" id="node-pred-results">
@@ -390,6 +390,7 @@ color:var(--text);min-height:100vh;overflow:hidden;}
         <div class="field-label">Known connections (comma-separated)</div>
         <input class="field-input" type="text" id="edge-node-connections" placeholder="e.g. nodeA, nodeB">
       </div>
+      <div class="inline-note">For new nodes, provide at least four existing graph connections before running link prediction.</div>
       <div class="field-group">
         <div class="field-label">Top-K predictions</div>
         <input class="field-input" type="number" id="edge-topk" value="8" min="1" max="20">
@@ -432,6 +433,7 @@ let tsneLoaded      = false;
 let tsnePoints      = null;
 let tsneThemes      = null;
 let currentView     = 'graph';
+const MIN_INDUCTIVE_CONNECTIONS = 4;
 
 const algoState = { community: 'louvain', centrality: 'betweenness' };
 
@@ -462,6 +464,15 @@ function directWakeGNN() {
   if (!gnnPublicUrl || !/^https?:\/\//.test(gnnPublicUrl)) return;
   const url = gnnPublicUrl.replace(/\/$/, '') + '/health';
   fetch(url, { mode: 'no-cors', cache: 'no-store' }).catch(() => {});
+}
+
+function hasGraphNode(nodeId) {
+  const id = String(nodeId || '').trim();
+  return !!graphData?.nodes?.some(n => String(n.id) === id);
+}
+
+function normalizeConnectionList(values) {
+  return [...new Set((values || []).map(v => String(v || '').trim()).filter(Boolean))];
 }
 
 async function pollGNNStatus(attempts = 60, delayMs = 5000) {
@@ -796,9 +807,12 @@ async function runGNNNodePred() {
   const term = document.getElementById('gnn-node-input').value.trim().toLowerCase();
   const res  = document.getElementById('node-pred-results');
   const connStr = document.getElementById('gnn-node-connections')?.value || '';
-  const connections = connStr.split(',').map(s => s.trim()).filter(Boolean);
+  const connections = normalizeConnectionList(connStr.split(','));
   if (!term) return toast('⚠ Enter a word to classify.');
   if (!gnnOnline) return toast('⚠ GNN service offline.');
+  if (!hasGraphNode(term) && connections.length < MIN_INDUCTIVE_CONNECTIONS) {
+    return toast(`Need at least ${MIN_INDUCTIVE_CONNECTIONS} known connections for unseen nodes.`);
+  }
 
   res.innerHTML = `<div style="padding:1rem"><span class="spinner"></span> Running GraphSAGE inference…</div>`;
 
@@ -819,7 +833,7 @@ async function runGNNNodePred() {
       ? `Accuracy: ${(Number(metrics.accuracy || 0) * 100).toFixed(1)}% | Macro-F1: ${(Number(metrics.macro_f1 || 0) * 100).toFixed(1)}%`
       : 'Metrics unavailable for this model';
     const trainingLine = training
-      ? `Mode: ${training.mode || 'full'} | Train: ${Math.round(Number(training.nc_train_frac || 0) * 100)}% | Epochs: ${training.nc_epochs || 'n/a'}`
+      ? `Mode: ${training.mode || 'full'} | Eval train: ${Math.round(Number(training.nc_train_frac || 0) * 100)}% | Inference: ${training.nc_inference_scope === 'full_graph' ? 'full graph' : 'split model'}`
       : 'Model: GraphSAGE | 3-layer | weighted structural features';
     const top5Html = d.top5 ? d.top5.map(t => `
       <div class="top5-row">
@@ -1159,11 +1173,15 @@ function runCentrality() {
 // ══════════════════════════════════════════════
 async function runEdgePrediction() {
   const name  = document.getElementById('edge-node-name').value.trim();
-  const conns = document.getElementById('edge-node-connections').value
-    .split(',').map(s=>s.trim()).filter(Boolean);
+  const conns = normalizeConnectionList(
+    document.getElementById('edge-node-connections').value.split(',')
+  );
   const topK  = parseInt(document.getElementById('edge-topk').value)||8;
   const res   = document.getElementById('edge-pred-results');
   if (!name || !conns.length) return toast('⚠ Enter node and connections.');
+  if (!hasGraphNode(name) && conns.length < MIN_INDUCTIVE_CONNECTIONS) {
+    return toast(`Need at least ${MIN_INDUCTIVE_CONNECTIONS} known connections for new nodes.`);
+  }
   res.innerHTML = `<div style="padding:1rem"><span class="spinner"></span> Computing link probabilities…</div>`;
   try {
     const r = await fetch('/api/predict-edge', {
