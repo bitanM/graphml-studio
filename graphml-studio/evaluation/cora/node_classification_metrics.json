@@ -1,0 +1,85 @@
+{
+  "dataset": "Cora",
+  "task": "node_classification",
+  "test_nodes": 1000,
+  "accuracy": 0.767,
+  "precision_macro": 0.7477,
+  "recall_macro": 0.7886,
+  "f1_macro": 0.7589,
+  "roc_auc_macro_ovr": 0.9494,
+  "roc_auc_micro_ovr": 0.9407,
+  "confusion_matrix": [
+    [
+      91,
+      9,
+      2,
+      10,
+      5,
+      5,
+      8
+    ],
+    [
+      2,
+      85,
+      1,
+      2,
+      0,
+      0,
+      1
+    ],
+    [
+      4,
+      9,
+      123,
+      4,
+      2,
+      0,
+      2
+    ],
+    [
+      25,
+      13,
+      11,
+      222,
+      33,
+      7,
+      8
+    ],
+    [
+      11,
+      2,
+      0,
+      6,
+      124,
+      3,
+      3
+    ],
+    [
+      11,
+      6,
+      3,
+      3,
+      0,
+      68,
+      12
+    ],
+    [
+      5,
+      2,
+      0,
+      1,
+      1,
+      1,
+      54
+    ]
+  ],
+  "classes": [
+    "Class 0",
+    "Class 1",
+    "Class 2",
+    "Class 3",
+    "Class 4",
+    "Class 5",
+    "Class 6"
+  ]
+}
