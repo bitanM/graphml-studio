@@ -1,15 +1,18 @@
 """
-GraphML Studio — Flask GNN Service Test Suite
-Unit + integration tests using pytest
+Copyright (C) 2026 Bitan Majumder
 
-Install:
-    pip install pytest pytest-flask requests
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
 
-Run:
-    pytest tests/test_gnn_services.py -v
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
 
-Note: The Flask app must be running on port 5001 for integration tests.
-      Unit tests run independently.
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 import pytest
