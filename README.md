@@ -72,6 +72,6 @@ This project is licensed under the **GNU General Public License v3.0 (GPL-3.0)**
 
 If you use GraphML Studio in your research, please cite our paper:
 
-> Majumder, B., & Sivakumar, T. (2026). GraphML Studio: An Application for Interactive Network Structure Analysis with Graph Neural Networks. *SoftwareX*.
+> Majumder, B., & Sivakumar, T. (2026). GraphML Studio: An Application for Interactive Network Structure Analysis with Graph Neural Networks. [Computer software]. GitHub. https://github.com/bitanM/graphml-studio
 
 ***
