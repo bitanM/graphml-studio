@@ -77,6 +77,7 @@ const GNN_HOST = process.env.GNN_HOST || 'localhost';
 const GNN_PORT = Number(process.env.GNN_PORT || 5001);
 const GNN_TIMEOUT_MS = Number(process.env.GNN_TIMEOUT_MS || (GNN_URL ? 15000 : 2000));
 const GNN_WAKE_TIMEOUT_MS = Number(process.env.GNN_WAKE_TIMEOUT_MS || (GNN_URL ? 30000 : 2000));
+const GNN_TRAIN_TIMEOUT_MS = Number(process.env.GNN_TRAIN_TIMEOUT_MS || 300000);
 const GNN_PUBLIC_URL = process.env.GNN_PUBLIC_URL || GNN_URL;
 let   gnnAvailable = false;
 let   gnnWakeInFlight = false;
@@ -164,9 +165,12 @@ function kickGNNWake() {
 }
 
 // ── GNN proxy helper ──
-function proxyToGNN(path, method, body, res, fallbackHandler = null) {
+function proxyToGNN(path, method, body, res, fallbackHandler = null, proxyOptions = {}) {
   const bodyStr = body ? JSON.stringify(body) : '';
   const options = buildGNNOptions(path, method, bodyStr);
+  if (Number.isFinite(proxyOptions.timeoutMs) && proxyOptions.timeoutMs > 0) {
+    options.timeout = proxyOptions.timeoutMs;
+  }
   let settled = false;
 
   const finishWithFallback = () => {
@@ -409,7 +413,7 @@ app.get('/api/gnn/wake', handleGNNWake);
 
 // ── User upload: train GNN on custom graph ──
 app.post('/api/gnn/train', (req, res) => {
-  proxyToGNN('/gnn/train', 'POST', req.body, res);
+  proxyToGNN('/gnn/train', 'POST', req.body, res, null, { timeoutMs: GNN_TRAIN_TIMEOUT_MS });
 });
 
 // ── User upload: get embeddings ──
