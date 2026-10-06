@@ -76,11 +76,11 @@ if (RAW_GNN_URL && !/^[a-zA-Z]+:\/\//.test(RAW_GNN_URL)) {
 const GNN_HOST = process.env.GNN_HOST || 'localhost';
 const GNN_PORT = Number(process.env.GNN_PORT || 5001);
 const GNN_TIMEOUT_MS = Number(process.env.GNN_TIMEOUT_MS || (GNN_URL ? 15000 : 2000));
-const GNN_WAKE_TIMEOUT_MS = Number(process.env.GNN_WAKE_TIMEOUT_MS || 10000);
+const GNN_WAKE_TIMEOUT_MS = Number(process.env.GNN_WAKE_TIMEOUT_MS || (GNN_URL ? 30000 : 2000));
 const GNN_PUBLIC_URL = process.env.GNN_PUBLIC_URL || GNN_URL;
 let   gnnAvailable = false;
+let   gnnWakeInFlight = false;
 
-// Check GNN service availability on startup and every 30s
 function buildGNNOptions(path, method, bodyStr = '') {
   if (GNN_URL) {
     const u = new URL(GNN_URL);
@@ -137,20 +137,57 @@ function probeGNN(timeoutMs) {
   });
 }
 
+function kickGNNWake() {
+  if (gnnWakeInFlight) return;
+  gnnWakeInFlight = true;
+  const clearWake = () => {
+    gnnWakeInFlight = false;
+  };
+  const options = buildGNNOptions('/health', 'GET', '');
+  options.timeout = GNN_WAKE_TIMEOUT_MS;
+  const req = gnnRequest(options, (res) => {
+    res.resume();
+    gnnAvailable = res.statusCode === 200;
+    res.on('end', clearWake);
+    res.on('close', clearWake);
+  });
+  req.on('error', () => {
+    gnnAvailable = false;
+    clearWake();
+  });
+  req.on('timeout', () => {
+    req.destroy();
+    gnnAvailable = false;
+    clearWake();
+  });
+  req.end();
+}
+
 // ── GNN proxy helper ──
 function proxyToGNN(path, method, body, res, fallbackHandler = null) {
   const bodyStr = body ? JSON.stringify(body) : '';
   const options = buildGNNOptions(path, method, bodyStr);
+  let settled = false;
+
+  const finishWithFallback = () => {
+    if (settled || res.headersSent) return true;
+    settled = true;
+    if (typeof fallbackHandler === 'function') {
+      fallbackHandler();
+      return true;
+    }
+    return false;
+  };
 
   const proxyReq = gnnRequest(options, (proxyRes) => {
     let data = '';
     proxyRes.on('data', chunk => data += chunk);
     proxyRes.on('end', () => {
+      if (settled || res.headersSent) return;
       if ((proxyRes.statusCode || 0) >= 400) {
-        if (typeof fallbackHandler === 'function') {
-          gnnAvailable = false;
-          return fallbackHandler();
-        }
+        gnnAvailable = false;
+        if (finishWithFallback()) return;
+        settled = true;
         res.status(proxyRes.statusCode).json({
           error: 'GNN service request failed.',
           status: proxyRes.statusCode,
@@ -159,23 +196,33 @@ function proxyToGNN(path, method, body, res, fallbackHandler = null) {
       }
       gnnAvailable = true;
       try {
-        res.status(proxyRes.statusCode).json(JSON.parse(data));
+        const payload = JSON.parse(data);
+        settled = true;
+        res.status(proxyRes.statusCode).json(payload);
       } catch (e) {
-        if (typeof fallbackHandler === 'function') {
-          gnnAvailable = false;
-          return fallbackHandler();
-        }
+        gnnAvailable = false;
+        if (finishWithFallback()) return;
+        settled = true;
         res.status(500).json({ error: 'Invalid response from GNN service.' });
       }
     });
   });
 
   proxyReq.on('error', (err) => {
+    if (settled || res.headersSent) return;
     gnnAvailable = false;
-    if (typeof fallbackHandler === 'function') {
-      return fallbackHandler();
-    }
+    if (finishWithFallback()) return;
+    settled = true;
     res.status(503).json({ error: 'GNN service connection failed: ' + err.message });
+  });
+
+  proxyReq.on('timeout', () => {
+    proxyReq.destroy();
+    if (settled || res.headersSent) return;
+    gnnAvailable = false;
+    if (finishWithFallback()) return;
+    settled = true;
+    res.status(504).json({ error: `GNN service timed out after ${options.timeout} ms.` });
   });
 
   proxyReq.write(bodyStr);
@@ -291,7 +338,11 @@ function predictEdgeAdamicAdarFallback(payload, res) {
 // ── GNN service status ──
 app.get('/api/gnn/status', async (req, res) => {
   try {
-    const result = await probeGNN();
+    const requestedTimeout = Number(req.query.timeoutMs || req.query.timeout || 0);
+    const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0
+      ? Math.min(Math.max(requestedTimeout, 1000), GNN_TIMEOUT_MS)
+      : GNN_TIMEOUT_MS;
+    const result = await probeGNN(timeoutMs);
     if (!result.ok) {
       gnnAvailable = false;
       return res.json({
@@ -318,7 +369,17 @@ app.get('/api/gnn/status', async (req, res) => {
 // Wake GNN (forces a live health probe to warm the service)
 async function handleGNNWake(req, res) {
   try {
-    const result = await probeGNN(GNN_WAKE_TIMEOUT_MS);
+    if (!GNN_URL && GNN_HOST === 'localhost' && GNN_PORT === 5001) {
+      gnnAvailable = false;
+      return res.json({
+        available: false,
+        warming: false,
+        message: 'GNN_URL is not configured for this deployment.',
+        gnn_url: null,
+      });
+    }
+    kickGNNWake();
+    const result = await probeGNN(Math.min(5000, GNN_WAKE_TIMEOUT_MS));
     if (!result.ok) {
       gnnAvailable = false;
       return res.json({

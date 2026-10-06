@@ -450,6 +450,9 @@ let tsnePoints      = null;
 let tsneThemes      = null;
 let currentView     = 'graph';
 const MIN_INDUCTIVE_CONNECTIONS = 4;
+const GNN_POLL_ATTEMPTS = 45;
+const GNN_POLL_DELAY_MS = 4000;
+const GNN_STATUS_TIMEOUT_MS = 8000;
 
 const algoState = { community: 'louvain', centrality: 'betweenness' };
 
@@ -491,7 +494,7 @@ function normalizeConnectionList(values) {
   return [...new Set((values || []).map(v => String(v || '').trim()).filter(Boolean))];
 }
 
-async function pollGNNStatus(attempts = 60, delayMs = 5000) {
+async function pollGNNStatus(attempts = GNN_POLL_ATTEMPTS, delayMs = GNN_POLL_DELAY_MS) {
   for (let i = 0; i < attempts; i++) {
     const available = await checkGNNStatus({ activate: true });
     if (available) return true;
@@ -506,7 +509,7 @@ function setTierOneMode() {
   const txt   = document.getElementById('gnn-badge-txt');
   if (badge && txt) {
     badge.className = 'gnn-badge';
-    txt.textContent = 'GNN Online';
+    txt.textContent = 'Tier 1 heuristics';
   }
   updateGNNButton();
 }
@@ -522,13 +525,19 @@ async function wakeGNN() {
   try {
     const r = await fetch('/api/gnn/wake', { method: 'POST' });
     const d = await r.json();
+    if (d.gnn_url) {
+      gnnPublicUrl = d.gnn_url;
+      directWakeGNN();
+    }
     if (r.ok && d.available) {
       warmed = true;
       gnnOnline = true;
       updateGNNButton();
       toast('GNN is online');
+    } else if (!d.gnn_url) {
+      toast(d.message || 'GNN service is not configured.');
     } else {
-      toast('Warming GNN service. Render cold starts can take 2-4 minutes.');
+      toast('Warming GNN service. Render cold starts can take several minutes.');
       warmed = await pollGNNStatus();
       if (warmed) toast('GNN is online');
     }
@@ -544,7 +553,7 @@ async function wakeGNN() {
 async function checkGNNStatus(options = {}) {
   const activate = options.activate === true;
   try {
-    const r = await fetch('/api/gnn/status');
+    const r = await fetch(`/api/gnn/status?timeoutMs=${GNN_STATUS_TIMEOUT_MS}`);
     const d = await r.json();
     if (d.gnn_url) gnnPublicUrl = d.gnn_url;
     if (activate && d.available) gnnOnline = true;

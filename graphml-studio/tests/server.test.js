@@ -250,6 +250,7 @@ describe('POST /api/predict-edge', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body).toHaveProperty('predictions');
+    expect(res.body.heuristic).toBe('adamic_adar');
     expect(Array.isArray(res.body.predictions)).toBe(true);
   });
 
@@ -316,6 +317,7 @@ describe('POST /api/predict-node', () => {
     expect(res.body).toHaveProperty('predictedCommunity');
     expect(res.body).toHaveProperty('confidence');
     expect(res.body).toHaveProperty('role');
+    expect(res.body.heuristic).toBe('majority_vote');
   });
 
   test('returns isolated for empty connections', async () => {
