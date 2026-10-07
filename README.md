@@ -43,7 +43,7 @@ node server.js
 ### 3. Tier 2: GNN Microservice (Python)
 ```bash
 # Navigate to the GNN service directory
-cd gnn_service 
+cd gnn_services 
 pip install -r requirements.txt
 python app.py
 ```
