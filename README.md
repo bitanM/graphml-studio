@@ -55,6 +55,22 @@ python app.py
 3.  **Train:** Click **"Train GNN"** to trigger the GraphSAGE pipeline. Training on 5,000 nodes typically takes **10–15 minutes** on a CPU.
 4.  **Inference:** Query the trained model for existing nodes or use the **Inductive Inference** panel to predict classes for new nodes.
 
+## 📊 Research Use
+
+GraphML Studio is currently being used as part of an ongoing research
+project involving multiple network representations derived from Twitter
+data, including tweet–tweet, user–tweet, and user–user networks.
+
+Within this research workflow, GraphML Studio is used for baseline
+network analysis, including the computation of centrality measures and
+community detection. This provides an interactive alternative to
+implementing these descriptive analyses separately in Python for each
+network representation.
+
+The underlying research project is ongoing. Therefore, its datasets,
+research questions, and empirical findings are not publicly disclosed
+at this stage.
+
 ## 🧪 Technical Specifications
 
 | Layer | Technology | Version |
